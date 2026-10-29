@@ -6,6 +6,7 @@ import {
   UniqueConstraintViolationException,
 } from "@mikro-orm/core";
 import { MikroORM } from "@mikro-orm/postgresql";
+import type { SqlEntityManager } from "@mikro-orm/knex";
 import {
   JsonRecord,
   LedgerEntryRecord,
@@ -170,202 +171,206 @@ export class WagerApplicationService {
   async submit(
     input: SubmitWagerInput,
     idempotencyKey: string | undefined,
+    transactionManager?: SqlEntityManager,
   ): Promise<WagerSubmissionResult> {
     const request = this.normalize(input, idempotencyKey);
+    const process = async (em: SqlEntityManager) => {
+      const identityLocks = [
+        `wager-external:${request.providerId}:${request.externalTransactionId}`,
+        `wager-idempotency:${request.providerId}:${request.idempotencyKey}`,
+      ].sort();
+      for (const identity of identityLocks) {
+        await em.execute(
+          "select pg_advisory_xact_lock(hashtextextended(?, 0))",
+          [identity],
+        );
+      }
+
+      const existing = await em.execute<ExistingWagerRow[]>(
+        `select id, provider_id, external_transaction_id, idempotency_key,
+                  payload_hash, status, failure_code, response_snapshot
+           from wager_transactions
+           where provider_id = ? and
+             (external_transaction_id = ? or idempotency_key = ?)
+           order by id`,
+        [
+          request.providerId,
+          request.externalTransactionId,
+          request.idempotencyKey,
+        ],
+      );
+      if (existing.length > 0) {
+        return this.replayOrConflict(existing, request);
+      }
+
+      const walletRecord = await em.findOne(
+        WalletRecord,
+        { id: request.walletId },
+        { lockMode: LockMode.PESSIMISTIC_WRITE },
+      );
+      if (!walletRecord) throw new WalletNotFoundError();
+
+      const wallet = Wallet.rehydrate({
+        id: walletRecord.id,
+        playerId: walletRecord.playerId,
+        currency: walletRecord.currency,
+        balance: walletRecord.balance,
+        version: walletRecord.version,
+      });
+      const referenceRow = request.referenceExternalTransactionId
+        ? await em.execute<ReferenceRow[]>(
+            `select id, provider_id, external_transaction_id, player_id,
+                      wallet_id, currency, round_id, kind, status, amount::text as amount,
+                      reference_external_transaction_id, failure_code,
+                      created_at, completed_at
+               from wager_transactions
+               where provider_id = ? and external_transaction_id = ?
+               for update`,
+            [request.providerId, request.referenceExternalTransactionId],
+          )
+        : [];
+      const reference = referenceRow[0]
+        ? transactionFromRow(referenceRow[0])
+        : undefined;
+      const transaction = WagerTransaction.create({
+        id: randomUUID(),
+        providerId: request.providerId,
+        externalTransactionId: request.externalTransactionId,
+        playerId: request.playerId,
+        walletId: request.walletId,
+        currency: request.money.currency,
+        roundId: request.roundId,
+        kind: request.kind,
+        amount: request.amount,
+        ...(request.referenceExternalTransactionId
+          ? {
+              referenceExternalTransactionId:
+                request.referenceExternalTransactionId,
+            }
+          : {}),
+        referenceAvailable: reference?.status === "PROCESSED",
+        createdAt: new Date(),
+      });
+      const alreadyReversed = reference
+        ? (
+            await em.execute<{ exists: boolean }[]>(
+              `select exists (
+                   select 1 from wager_transactions
+                   where reference_transaction_id = ?
+                     and status = 'PROCESSED'
+                     and kind in ('REFUND', 'ROLLBACK')
+                 ) as exists`,
+              [reference.id],
+            )
+          )[0]?.exists === true
+        : false;
+      const result = ProcessWager.apply(transaction, wallet, {
+        ...(reference
+          ? { reference: { status: "found", transaction: reference } }
+          : {}),
+        referenceAlreadyReversed: alreadyReversed,
+        occurredAt: new Date(),
+        ledgerEntryId: randomUUID(),
+      });
+      const savedAt = new Date();
+      if (result.wallet && result.wallet.version !== walletRecord.version) {
+        walletRecord.balance = result.wallet.balance.toString();
+        walletRecord.version = result.wallet.version;
+        walletRecord.updatedAt = savedAt;
+      }
+      const httpStatus = this.httpStatus(result.transaction.status);
+      const body: WagerSubmissionBody = {
+        transactionId: result.transaction.id,
+        status: result.transaction.status,
+        ...(result.transaction.failureCode
+          ? { failureCode: result.transaction.failureCode }
+          : {}),
+        walletBalance: (result.wallet ?? wallet).balance.toString(),
+        idempotentReplay: false,
+      };
+      const responseSnapshot = { httpStatus, body };
+      const retryAt =
+        result.transaction.status === "PENDING_REFERENCE"
+          ? new Date(savedAt.getTime() + 1_000)
+          : null;
+      const expiresAt =
+        result.transaction.status === "PENDING_REFERENCE"
+          ? new Date(savedAt.getTime() + 24 * 60 * 60 * 1_000)
+          : null;
+      const transactionRecord = em.create(WagerTransactionRecord, {
+        id: result.transaction.id,
+        providerId: result.transaction.providerId,
+        externalTransactionId: result.transaction.externalTransactionId,
+        idempotencyKey: request.idempotencyKey,
+        payloadHash: request.payloadHash,
+        playerId: result.transaction.playerId,
+        walletId: result.transaction.walletId,
+        currency: result.transaction.currency,
+        roundId: result.transaction.roundId,
+        gameId: request.gameId,
+        kind: result.transaction.kind,
+        status: result.transaction.status,
+        amount: result.transaction.amount.toString(),
+        referenceExternalTransactionId:
+          result.transaction.referenceExternalTransactionId,
+        referenceTransactionId: reference?.id ?? null,
+        failureCode: result.transaction.failureCode,
+        createdAt: new Date(result.transaction.createdAt),
+        completedAt: result.transaction.completedAt
+          ? new Date(result.transaction.completedAt)
+          : null,
+        responseSnapshot,
+        nextRetryAt: retryAt,
+        pendingReferenceExpiresAt: expiresAt,
+        retryCount: 0,
+      });
+      em.persist(transactionRecord);
+      await em.flush();
+      if (result.ledgerEntry) {
+        const entry = result.ledgerEntry;
+        em.persist(
+          em.create(LedgerEntryRecord, {
+            id: entry.id,
+            walletId: entry.walletId,
+            transactionId: entry.transactionId,
+            amount: entry.amount.toString(),
+            currency: entry.amount.currency,
+            direction: entry.direction,
+            balanceBefore: entry.balanceBefore.toString(),
+            balanceAfter: entry.balanceAfter.toString(),
+            createdAt: new Date(entry.occurredAt),
+          }),
+        );
+      }
+      const events = this.integrationEvents(
+        result.transaction,
+        result.wallet ?? wallet,
+        result.ledgerEntry,
+        savedAt,
+      );
+      for (const event of events) {
+        em.persist(
+          em.create(OutboxMessageRecord, {
+            eventId: event.eventId,
+            eventType: event.eventType,
+            aggregateId: event.aggregateId,
+            payload: jsonRecord(event),
+            status: "PENDING",
+            attempts: 0,
+            nextAttemptAt: savedAt,
+            createdAt: savedAt,
+          }),
+        );
+      }
+      await em.flush();
+      return { httpStatus, body };
+    };
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await this.orm.em.fork().transactional(async (em) => {
-          const identityLocks = [
-            `wager-external:${request.providerId}:${request.externalTransactionId}`,
-            `wager-idempotency:${request.providerId}:${request.idempotencyKey}`,
-          ].sort();
-          for (const identity of identityLocks) {
-            await em.execute(
-              "select pg_advisory_xact_lock(hashtextextended(?, 0))",
-              [identity],
-            );
-          }
-
-          const existing = await em.execute<ExistingWagerRow[]>(
-            `select id, provider_id, external_transaction_id, idempotency_key,
-                    payload_hash, status, failure_code, response_snapshot
-             from wager_transactions
-             where provider_id = ? and
-               (external_transaction_id = ? or idempotency_key = ?)
-             order by id`,
-            [
-              request.providerId,
-              request.externalTransactionId,
-              request.idempotencyKey,
-            ],
-          );
-          if (existing.length > 0) {
-            return this.replayOrConflict(existing, request);
-          }
-
-          const walletRecord = await em.findOne(
-            WalletRecord,
-            { id: request.walletId },
-            { lockMode: LockMode.PESSIMISTIC_WRITE },
-          );
-          if (!walletRecord) throw new WalletNotFoundError();
-
-          const wallet = Wallet.rehydrate({
-            id: walletRecord.id,
-            playerId: walletRecord.playerId,
-            currency: walletRecord.currency,
-            balance: walletRecord.balance,
-            version: walletRecord.version,
-          });
-          const referenceRow = request.referenceExternalTransactionId
-            ? await em.execute<ReferenceRow[]>(
-                `select id, provider_id, external_transaction_id, player_id,
-                        wallet_id, currency, round_id, kind, status, amount::text as amount,
-                        reference_external_transaction_id, failure_code,
-                        created_at, completed_at
-                 from wager_transactions
-                 where provider_id = ? and external_transaction_id = ?
-                 for update`,
-                [request.providerId, request.referenceExternalTransactionId],
-              )
-            : [];
-          const reference = referenceRow[0]
-            ? transactionFromRow(referenceRow[0])
-            : undefined;
-          const transaction = WagerTransaction.create({
-            id: randomUUID(),
-            providerId: request.providerId,
-            externalTransactionId: request.externalTransactionId,
-            playerId: request.playerId,
-            walletId: request.walletId,
-            currency: request.money.currency,
-            roundId: request.roundId,
-            kind: request.kind,
-            amount: request.amount,
-            ...(request.referenceExternalTransactionId
-              ? {
-                  referenceExternalTransactionId:
-                    request.referenceExternalTransactionId,
-                }
-              : {}),
-            referenceAvailable: reference?.status === "PROCESSED",
-            createdAt: new Date(),
-          });
-          const alreadyReversed = reference
-            ? (
-                await em.execute<{ exists: boolean }[]>(
-                  `select exists (
-                     select 1 from wager_transactions
-                     where reference_transaction_id = ?
-                       and status = 'PROCESSED'
-                       and kind in ('REFUND', 'ROLLBACK')
-                   ) as exists`,
-                  [reference.id],
-                )
-              )[0]?.exists === true
-            : false;
-          const result = ProcessWager.apply(transaction, wallet, {
-            ...(reference
-              ? { reference: { status: "found", transaction: reference } }
-              : {}),
-            referenceAlreadyReversed: alreadyReversed,
-            occurredAt: new Date(),
-            ledgerEntryId: randomUUID(),
-          });
-          const savedAt = new Date();
-          if (result.wallet && result.wallet.version !== walletRecord.version) {
-            walletRecord.balance = result.wallet.balance.toString();
-            walletRecord.version = result.wallet.version;
-            walletRecord.updatedAt = savedAt;
-          }
-          const httpStatus = this.httpStatus(result.transaction.status);
-          const body: WagerSubmissionBody = {
-            transactionId: result.transaction.id,
-            status: result.transaction.status,
-            ...(result.transaction.failureCode
-              ? { failureCode: result.transaction.failureCode }
-              : {}),
-            walletBalance: (result.wallet ?? wallet).balance.toString(),
-            idempotentReplay: false,
-          };
-          const responseSnapshot = { httpStatus, body };
-          const retryAt =
-            result.transaction.status === "PENDING_REFERENCE"
-              ? new Date(savedAt.getTime() + 1_000)
-              : null;
-          const expiresAt =
-            result.transaction.status === "PENDING_REFERENCE"
-              ? new Date(savedAt.getTime() + 24 * 60 * 60 * 1_000)
-              : null;
-          const transactionRecord = em.create(WagerTransactionRecord, {
-            id: result.transaction.id,
-            providerId: result.transaction.providerId,
-            externalTransactionId: result.transaction.externalTransactionId,
-            idempotencyKey: request.idempotencyKey,
-            payloadHash: request.payloadHash,
-            playerId: result.transaction.playerId,
-            walletId: result.transaction.walletId,
-            currency: result.transaction.currency,
-            roundId: result.transaction.roundId,
-            gameId: request.gameId,
-            kind: result.transaction.kind,
-            status: result.transaction.status,
-            amount: result.transaction.amount.toString(),
-            referenceExternalTransactionId:
-              result.transaction.referenceExternalTransactionId,
-            referenceTransactionId: reference?.id ?? null,
-            failureCode: result.transaction.failureCode,
-            createdAt: new Date(result.transaction.createdAt),
-            completedAt: result.transaction.completedAt
-              ? new Date(result.transaction.completedAt)
-              : null,
-            responseSnapshot,
-            nextRetryAt: retryAt,
-            pendingReferenceExpiresAt: expiresAt,
-            retryCount: 0,
-          });
-          em.persist(transactionRecord);
-          await em.flush();
-          if (result.ledgerEntry) {
-            const entry = result.ledgerEntry;
-            em.persist(
-              em.create(LedgerEntryRecord, {
-                id: entry.id,
-                walletId: entry.walletId,
-                transactionId: entry.transactionId,
-                amount: entry.amount.toString(),
-                currency: entry.amount.currency,
-                direction: entry.direction,
-                balanceBefore: entry.balanceBefore.toString(),
-                balanceAfter: entry.balanceAfter.toString(),
-                createdAt: new Date(entry.occurredAt),
-              }),
-            );
-          }
-          const events = this.integrationEvents(
-            result.transaction,
-            result.wallet ?? wallet,
-            result.ledgerEntry,
-            savedAt,
-          );
-          for (const event of events) {
-            em.persist(
-              em.create(OutboxMessageRecord, {
-                eventId: event.eventId,
-                eventType: event.eventType,
-                aggregateId: event.aggregateId,
-                payload: jsonRecord(event),
-                status: "PENDING",
-                attempts: 0,
-                nextAttemptAt: savedAt,
-                createdAt: savedAt,
-              }),
-            );
-          }
-          await em.flush();
-          return { httpStatus, body };
-        });
+        if (transactionManager) return await process(transactionManager);
+        return await this.orm.em.fork().transactional((em) => process(em));
       } catch (error) {
+        if (transactionManager) throw error;
         if (error instanceof WagerNotFoundError) throw error;
         if (error instanceof UniqueConstraintViolationException) {
           const winner = await this.findIdentityWinner(request);
@@ -388,6 +393,220 @@ export class WagerApplicationService {
       }
     }
     throw new WagerPersistenceUnavailableError();
+  }
+
+  async reprocessPendingReference(
+    transactionId: string,
+    leaseOwner: string,
+  ): Promise<"processed" | "pending" | "not-claimed"> {
+    return this.orm.em.fork().transactional(async (em) => {
+      const rows = await em.execute<
+        Array<
+          ReferenceRow & {
+            retry_count: number;
+            lease_owner: string | null;
+            pending_reference_expires_at: Date | string | null;
+          }
+        >
+      >(
+        `select id, provider_id, external_transaction_id, player_id,
+                wallet_id, currency, round_id, kind, status, amount::text as amount,
+                reference_external_transaction_id, failure_code,
+                created_at, completed_at, retry_count, lease_owner,
+                pending_reference_expires_at
+         from wager_transactions
+         where id = ? and status = 'PENDING_REFERENCE'`,
+        [transactionId],
+      );
+      const candidate = rows[0];
+      if (!candidate || candidate.lease_owner !== leaseOwner) {
+        return "not-claimed";
+      }
+
+      const walletRecord = await em.findOne(
+        WalletRecord,
+        { id: candidate.wallet_id },
+        { lockMode: LockMode.PESSIMISTIC_WRITE },
+      );
+      const wallet = walletRecord
+        ? Wallet.rehydrate({
+            id: walletRecord.id,
+            playerId: walletRecord.playerId,
+            currency: walletRecord.currency,
+            balance: walletRecord.balance,
+            version: walletRecord.version,
+          })
+        : undefined;
+      const lockedRows = await em.execute<
+        Array<
+          ReferenceRow & {
+            retry_count: number;
+            lease_owner: string | null;
+            pending_reference_expires_at: Date | string | null;
+          }
+        >
+      >(
+        `select id, provider_id, external_transaction_id, player_id,
+                  wallet_id, currency, round_id, kind, status, amount::text as amount,
+                  reference_external_transaction_id, failure_code,
+                  created_at, completed_at, retry_count, lease_owner,
+                  pending_reference_expires_at
+           from wager_transactions
+           where id = ? and status = 'PENDING_REFERENCE'
+           for update`,
+        [transactionId],
+      );
+      const row = lockedRows[0];
+      if (!row || row.lease_owner !== leaseOwner) return "not-claimed";
+      const transaction = transactionFromRow(row);
+      const referenceRows =
+        row.provider_id && row.reference_external_transaction_id
+          ? await em.execute<ReferenceRow[]>(
+              `select id, provider_id, external_transaction_id, player_id,
+                      wallet_id, currency, round_id, kind, status, amount::text as amount,
+                      reference_external_transaction_id, failure_code,
+                      created_at, completed_at
+               from wager_transactions
+               where provider_id = ? and external_transaction_id = ?
+               for update`,
+              [row.provider_id, row.reference_external_transaction_id],
+            )
+          : [];
+      const referenceRow = referenceRows[0];
+      const reference = referenceRow
+        ? transactionFromRow(referenceRow)
+        : undefined;
+      const retryCount = row.retry_count + 1;
+      const databaseTimes = await em.execute<
+        Array<{ current_time: Date | string }>
+      >("select clock_timestamp() as current_time");
+      const databaseTime = databaseTimes[0]?.current_time;
+      if (!databaseTime) {
+        throw new Error("Database clock did not return a timestamp.");
+      }
+      const occurredAt = new Date(databaseTime);
+      if (!row.pending_reference_expires_at) {
+        throw new Error(
+          "Pending wager is missing its persisted reference expiry.",
+        );
+      }
+      const retryExhausted =
+        retryCount >= 20 ||
+        occurredAt.getTime() >=
+          new Date(row.pending_reference_expires_at).getTime();
+      const referenceUnresolved =
+        !reference ||
+        reference.status === "PENDING" ||
+        reference.status === "PENDING_REFERENCE";
+      const result =
+        retryExhausted && referenceUnresolved
+          ? ProcessWager.expireReference(transaction, wallet, occurredAt)
+          : ProcessWager.apply(transaction, wallet, {
+              ...(reference
+                ? { reference: { status: "found", transaction: reference } }
+                : { reference: { status: "not-found" } }),
+              referenceAlreadyReversed: reference
+                ? (
+                    await em.execute<{ exists: boolean }[]>(
+                      `select exists (
+                         select 1 from wager_transactions
+                         where reference_transaction_id = ?
+                           and status = 'PROCESSED'
+                           and kind in ('REFUND', 'ROLLBACK')
+                       ) as exists`,
+                      [reference.id],
+                    )
+                  )[0]?.exists === true
+                : false,
+              occurredAt,
+              ledgerEntryId: randomUUID(),
+            });
+
+      if (result.wallet && walletRecord) {
+        walletRecord.balance = result.wallet.balance.toString();
+        walletRecord.version = result.wallet.version;
+        walletRecord.updatedAt = occurredAt;
+      }
+      const stillPending = result.transaction.status === "PENDING_REFERENCE";
+      const retryDelays = [1, 2, 4, 8, 16, 32, 60] as const;
+      const nextRetryAt = stillPending
+        ? new Date(
+            occurredAt.getTime() +
+              retryDelays[Math.min(retryCount, retryDelays.length - 1)]! *
+                1_000,
+          )
+        : null;
+      const httpStatus = this.httpStatus(result.transaction.status);
+      const responseSnapshot = {
+        httpStatus,
+        body: {
+          transactionId: result.transaction.id,
+          status: result.transaction.status,
+          ...(result.transaction.failureCode
+            ? { failureCode: result.transaction.failureCode }
+            : {}),
+          walletBalance: (result.wallet ?? wallet)?.balance.toString() ?? null,
+          idempotentReplay: false,
+        },
+      };
+      await em.execute(
+        `update wager_transactions
+         set status = ?, failure_code = ?, completed_at = ?,
+             reference_transaction_id = ?, retry_count = ?,
+             next_retry_at = ?, lease_owner = null, lease_expires_at = null,
+             response_snapshot = ?::jsonb
+         where id = ?`,
+        [
+          result.transaction.status,
+          result.transaction.failureCode,
+          result.transaction.completedAt,
+          reference?.id ?? null,
+          retryCount,
+          nextRetryAt,
+          JSON.stringify(responseSnapshot),
+          transactionId,
+        ],
+      );
+      if (result.ledgerEntry) {
+        const entry = result.ledgerEntry;
+        em.persist(
+          em.create(LedgerEntryRecord, {
+            id: entry.id,
+            walletId: entry.walletId,
+            transactionId: entry.transactionId,
+            amount: entry.amount.toString(),
+            currency: entry.amount.currency,
+            direction: entry.direction,
+            balanceBefore: entry.balanceBefore.toString(),
+            balanceAfter: entry.balanceAfter.toString(),
+            createdAt: new Date(entry.occurredAt),
+          }),
+        );
+      }
+      if (!stillPending && result.wallet) {
+        for (const event of this.integrationEvents(
+          result.transaction,
+          result.wallet,
+          result.ledgerEntry,
+          occurredAt,
+        )) {
+          em.persist(
+            em.create(OutboxMessageRecord, {
+              eventId: event.eventId,
+              eventType: event.eventType,
+              aggregateId: event.aggregateId,
+              payload: jsonRecord(event),
+              status: "PENDING",
+              attempts: 0,
+              nextAttemptAt: occurredAt,
+              createdAt: occurredAt,
+            }),
+          );
+        }
+      }
+      await em.flush();
+      return stillPending ? "pending" : "processed";
+    });
   }
 
   async findById(id: string): Promise<WagerTransactionView> {

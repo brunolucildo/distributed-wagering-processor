@@ -10,6 +10,7 @@ import {
 import { InitialPersistenceSchema } from "./migrations/InitialPersistenceSchema";
 import { RejectNonFiniteMoney } from "./migrations/RejectNonFiniteMoney";
 import { Stage3WagerIdentity } from "./migrations/Stage3WagerIdentity";
+import { Stage4MessagingWorkers } from "./migrations/Stage4MessagingWorkers";
 
 export function createDatabaseOptions(databaseUrl: string): Options {
   return {
@@ -37,6 +38,10 @@ export function createDatabaseOptions(databaseUrl: string): Options {
         {
           name: "Stage3WagerIdentity",
           class: Stage3WagerIdentity,
+        },
+        {
+          name: "Stage4MessagingWorkers",
+          class: Stage4MessagingWorkers,
         },
       ],
       transactional: true,

@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — Distributed Wagering Processor
 
-> **Status:** arquitetura-alvo com entregas até o Stage 3; lacunas de conformidade e do Stage 3 corrigidas e testadas em 2026-10-29.
+> **Status:** Stages 0–4 implementados; três processos independentes, dois publishers, crash/restart e redrive foram validados com PostgreSQL e LocalStack. O fault injection de timeout de shutdown ainda precisa ser executado em POSIX; o teste é ignorado no Windows.
 > **Objetivo:** documentar as decisões, invariantes e trade-offs da implementação.  
 > **Escopo:** este documento descreve o desenho pretendido; decisões ainda não implementadas devem ser tratadas como plano, não como garantias já comprovadas.
 
@@ -10,14 +10,15 @@
 - **Stage 1:** domínio puro, dinheiro exato em `bigint`, factories/rehydration, estados, operações, referências e reversões. `ProcessWager` é um serviço puro.
 - **Stage 2:** cinco tabelas, mappings MikroORM, migrations explícitas, abertura atômica de wallet, consultas, ledger append-only, cursor e reconciliação sem reparo. O teste de rollback nas cinco tabelas valida a infraestrutura, não um pipeline SQS.
 - **Stage 3:** API HTTP de apostas, hash canônico, locks advisory ordenados para identidade/idempotência, lock de wallet, retries limitados, replay de snapshot e persistência atômica de transaction/wallet/ledger/Outbox.
-- **Stages 4–5:** consumidores e publishers, recuperação de referências, readiness, métricas exportadas e operação/handoff continuam planejados. Verificação com três processos permanece pendente.
+- **Stage 4:** consumidor SQS com Inbox transacional, publisher Outbox com lease/retry/replay, reprocessador de referências com lease/expiração, endpoint de readiness e bootstrap por função foram implementados. Testes PostgreSQL/LocalStack cobrem três processos independentes, dois publishers com claims disjuntos, crash/restart nos limites de ACK/publicação, redrive à DLQ e recuperação/expiração. Timeout de shutdown permanece sem validação neste ambiente Windows.
+- **Stage 5:** métricas exportadas, hardening operacional, revisão final e handoff continuam planejados.
 
 A auditoria Stage 2 encontrou duas lacunas, ambas corrigidas. Após o Stage 3, a suíte passa em 119 testes / 404 assertions (47 testes de integração PostgreSQL / 229 assertions), além de lint, type-check, build e formatação:
 
 1. A nova migration `RejectNonFiniteMoney` rejeita `NaN` e infinitos explicitamente nas cinco colunas monetárias de wallet, transação e ledger. A migration inicial permanece intacta. Dados legados inválidos causam falha explícita na aplicação da migration, sem reparo silencioso. O `down` da correção remove apenas suas constraints e preserva os dados.
 2. O filtro existente de erros HTTP está registrado globalmente via `APP_FILTER`, não apenas no controller. JSON malformado retorna `400` com `{ code: "INVALID_REQUEST", message: "Invalid request." }`, sem expor o corpo recebido. Testes reais cobrem essa borda.
 
-Os critérios single-process do Stage 3 estão cobertos. Os eventos permanecem apenas na Outbox: não há publisher SQS ou reprocessador de referências. O teste usa uma aplicação Nest com requisições HTTP concorrentes e não comprova três processos independentes. As seções seguintes distinguem entregas atuais de requisitos-alvo ainda não validados.
+Os critérios single-process do Stage 3 e os fluxos Stage 4 descritos estão cobertos por testes. O processamento foi exercitado com SQS LocalStack e PostgreSQL reais; três processos e encerramento forçado nos limites de commit/ACK e publish/confirm foram demonstrados. O teste de timeout de shutdown com SIGTERM e transação bloqueada está implementado, mas não foi executado no Windows, onde o sinal enviado ao subprocesso não é catchable como no POSIX.
 
 ## 1. Contexto e objetivos
 
@@ -293,13 +294,14 @@ O PostgreSQL é a fonte de verdade do saldo, das transações, do ledger e dos r
 
 ### 6.1 Tabelas principais
 
-| Tabela                  | Finalidade                                                                                       |
-| ----------------------- | ------------------------------------------------------------------------------------------------ |
-| `wallets`               | Saldo materializado, moeda, versão e timestamps.                                                 |
-| `wager_transactions`    | Operações, identidade externa, chave/hash de idempotência, estado, referência e código de falha. |
-| `wallet_ledger_entries` | Histórico imutável de movimentos de saldo.                                                       |
-| `inbox_messages`        | Deduplicação persistente de mensagens recebidas.                                                 |
-| `outbox_messages`       | Eventos pendentes ou publicados e metadados de retry.                                            |
+| Tabela                    | Finalidade                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------ |
+| `wallets`                 | Saldo materializado, moeda, versão e timestamps.                                                 |
+| `wager_transactions`      | Operações, identidade externa, chave/hash de idempotência, estado, referência e código de falha. |
+| `wallet_ledger_entries`   | Histórico imutável de movimentos de saldo.                                                       |
+| `inbox_messages`          | Deduplicação persistente de mensagens recebidas.                                                 |
+| `inbox_message_conflicts` | Payloads permanentes que reutilizam um `messageId` com hash diferente.                           |
+| `outbox_messages`         | Eventos pendentes ou publicados e metadados de retry.                                            |
 
 Nomes e colunas finais podem ser adaptados, desde que as garantias sejam mantidas.
 
@@ -347,7 +349,7 @@ Fluxo de uma submissão HTTP:
 6. Persistir alteração da wallet, ledger e Outbox aplicáveis na mesma transação; armazenar o snapshot HTTP original.
 7. Confirmar o commit e responder usando o resultado persistido.
 
-O caso HTTP está implementado. A execução SQS, confirmação de Inbox e confirmação de mensagens continuam Stage 4; o Outbox não é publicado no Stage 3.
+No limite do Stage 3, apenas o caso HTTP estava implementado: o Outbox ainda não era publicado e a Inbox ainda não era acionada por SQS. O Stage 4 adicionou esses fluxos.
 
 A ordem implementada é identidade/idempotência (ordem lexical estável), wallet e referência. Deadlocks e erros transitórios cobertos são repetidos até três tentativas com jitter. Os locks de identidade usam `pg_advisory_xact_lock`; correção persiste no PostgreSQL, não depende de estado em memória.
 
@@ -424,31 +426,30 @@ A implementação deve definir e testar a semântica exata de `WIN` e das refer�
 
 - `wager-transactions.fifo`
 - `wager-transactions-dlq.fifo`
+- `integration-events.fifo`
 
-A infraestrutura local cria essas filas no LocalStack. O nome e a configuração de filas de eventos publicados pela outbox devem ser definidos de forma explícita no ambiente.
+A infraestrutura local cria essas filas no LocalStack; nomes são configuráveis pelo ambiente. O contrato de entrada `WagerTransactionRequested` carrega `messageId`, `type`, `version`, `occurredAt` e `data` com os campos do wager e `idempotencyKey`. `OPENING` não é aceito. O `MessageGroupId` é o `walletId`; o `MessageDeduplicationId` é estável, e o banco continua sendo a fronteira de correção.
 
 ### 10.2 Consumidor
 
-O consumidor deve:
+O consumidor implementado:
 
 1. validar o envelope e o contrato da mensagem;
-2. abrir uma transação SQL;
-3. registrar a mensagem na Inbox;
-4. detectar uma mensagem já processada sem repetir seus efeitos;
-5. invocar o mesmo `ProcessWagerUseCase` utilizado pela API;
-6. persistir a Inbox, a transação, a wallet, o ledger e a outbox na mesma transação;
-7. confirmar o commit;
-8. executar ACK somente após o commit.
+2. abrir uma transação SQL e inserir/serializar a Inbox por `(consumerName, messageId)`;
+3. tratar a mesma mensagem/hash como no-op e registrar payload conflitante em `inbox_message_conflicts`;
+4. invocar o mesmo serviço de aplicação da API usando o `SqlEntityManager` da transação externa;
+5. persistir Inbox, wager, wallet, ledger e Outbox atomicamente;
+6. confirmar o commit antes de apagar a mensagem SQS.
 
 Se ocorrer falha antes do commit, a transação SQL é revertida e a mensagem deve continuar elegível para retry. Se o processo morrer após o commit e antes do ACK, a redelivery deve ser segura.
 
 ### 10.3 Classificação de falhas
 
 - **Negócio terminal:** registrar `REJECTED` com `failureCode` estável e confirmar a mensagem quando o resultado terminal estiver persistido.
-- **Transitória:** rollback e retry com backoff; não confirmar a mensagem antes de uma conclusão durável.
-- **Permanente/irrecuperável:** aplicar a política documentada de tentativas e DLQ, preservando informação suficiente para diagnóstico sem registrar dados sensíveis.
+- **Transitória:** rollback e retry pelo redrive de SQS; não confirmar a mensagem antes de uma conclusão durável.
+- **Permanente/irrecuperável:** enviar para a DLQ com atributo `failureCode` sanitizado e apagar a origem apenas depois da entrega na DLQ.
 
-O limite de tentativas, visibility timeout, redrive policy e backoff serão configurados e documentados. O shutdown gracioso deve concluir o trabalho em andamento ou permitir que a mensagem volte a ficar visível.
+O visibility timeout é 60 segundos, estendido durante trabalho ativo; a source queue usa redrive após cinco receives. `WORKER_ROLE` seleciona `api`, `wager-consumer`, `outbox-publisher`, `reference-reprocessor` ou `all`. O shutdown para novas leituras e permite finalizar o lote corrente até `WORKER_SHUTDOWN_TIMEOUT_MS`; trabalho não confirmado permanece recuperável por visibility timeout/lease.
 
 ## 11. Transactional Outbox
 
@@ -465,9 +466,9 @@ Os eventos terão envelope tipado com `eventId`, `eventType`, `version`, `aggreg
 
 ### 11.2 Publicação concorrente
 
-O publisher deve adquirir registros pendentes de forma concorrente e segura. A estratégia proposta é selecionar com `FOR UPDATE SKIP LOCKED` e usar claim/lease persistente com prazo de expiração, evitando que dois publishers trabalhem indefinidamente sobre o mesmo registro.
+O publisher implementado adquire registros pendentes com `FOR UPDATE SKIP LOCKED`, persiste um lease de 60 segundos e publica fora da transação SQL. Claims são limitados a 10 eventos por lote; falhas aplicam backoff exponencial com jitter (base de 1 segundo, limite de 5 minutos) e mantêm os eventos após 10 tentativas.
 
-O publisher não deve manter uma transação SQL aberta durante a chamada de rede ao SQS. Depois da publicação, registra a confirmação; em falha, agenda retry com backoff.
+Após 10 falhas, o evento permanece em `FAILED`. `bun run outbox:replay` reenvia um evento explicitamente por `OUTBOX_EVENT_ID`, reiniciando seu contador de tentativas. O publisher não mantém transação SQL aberta durante a chamada de rede ao SQS.
 
 ### 11.3 Garantia e trade-off
 
@@ -482,12 +483,12 @@ Quando uma operação dependente chega antes da referência:
 1. persistir a operação como `PENDING_REFERENCE`;
 2. não alterar o saldo nem criar lançamento de ledger;
 3. registrar o evento de pendência na outbox;
-4. agendar nova tentativa com `nextAttemptAt` e backoff exponencial;
-5. reprocessar por worker persistente, com aquisição concorrente segura;
+4. agendar nova tentativa com `next_retry_at`, começando em 1 segundo e seguindo 2, 4, 8, 16, 32 e 60 segundos (60 segundos nas seguintes);
+5. reprocessar por worker persistente com lease recuperável e aquisição concorrente segura;
 6. ao encontrar a referência, validar as regras de domínio e processar dentro de uma transação;
 7. ao esgotar tentativas ou TTL, transicionar para `REJECTED` com código de falha específico e emitir o evento correspondente.
 
-O limite de tentativas e o TTL são decisões de configuração que precisam ser definidos antes da entrega. Timers em memória não serão a fonte de verdade para o agendamento.
+O worker realiza até 20 tentativas ou 24 horas desde a criação, o que ocorrer primeiro. Ao expirar com a referência ausente/em processamento, transiciona para `REJECTED/REFERENCE_NOT_FOUND` e persiste o evento de rejeição na mesma transação. Timers em memória não são a fonte de verdade para o agendamento.
 
 ## 13. API HTTP
 
@@ -568,7 +569,7 @@ Não incluir dados sensíveis nem payloads financeiros completos. Os logs devem 
 ### 15.3 Health checks
 
 - `live`: confirma que o processo está vivo.
-- `ready`: verifica PostgreSQL e SQS conforme as dependências necessárias para o processo.
+- `ready`: verifica PostgreSQL e as três filas SQS configuradas. API e workers isolados expõem somente as rotas de health necessárias ao seu perfil.
 
 A indisponibilidade de uma dependência deve afetar readiness quando ela impede o processo de cumprir sua função. Health endpoints permanecem sem autenticação.
 
@@ -632,7 +633,7 @@ O Docker Compose deve provisionar os serviços necessários para desenvolvimento
 - LocalStack;
 - Keycloak somente se a autenticação for implementada.
 
-Os processos de aplicação podem usar a mesma imagem e receber comandos de inicialização diferentes. A configuração deve ser feita por variáveis de ambiente, com valores locais documentados e sem credenciais reais no repositório.
+Os processos de aplicação usam o mesmo entrypoint e selecionam sua função por `WORKER_ROLE`. Worker-only processes escutam `WORKER_HEALTH_PORT` e não expõem os controllers da API; use uma porta única por processo. A configuração deve ser feita por variáveis de ambiente, com valores locais documentados e sem credenciais reais no repositório.
 
 O README do projeto deve documentar:
 
@@ -663,7 +664,7 @@ O README do projeto deve documentar:
 - Uma wallet muito concorrida pode se tornar um ponto quente por causa do lock por linha.
 - A outbox pode apresentar atraso durante indisponibilidades do broker.
 - Entrega duplicada de eventos continua possível e precisa ser tolerada pelos consumidores.
-- Os valores de TTL, limite de tentativas e visibility timeout precisam ser calibrados e documentados.
+- Os limites atuais são 20 tentativas/24 horas para referências, 10 tentativas para publicação Outbox e 60 segundos de visibility/lease; devem ser calibrados para operação de produção.
 - O uso operacional pode limitar-se a BRL no desafio, embora o domínio continue validando moedas.
 - Autenticação pode ficar fora da implementação inicial, desde que a decisão e o ponto de extensão estejam explícitos.
 

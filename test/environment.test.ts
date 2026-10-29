@@ -6,6 +6,7 @@ describe("environment configuration", () => {
     const environment = loadEnvironment({ NODE_ENV: "development" });
 
     expect(environment.PORT).toBe(3000);
+    expect(environment.WORKER_HEALTH_PORT).toBe(3001);
     expect(environment.DATABASE_URL).toBe(
       "postgresql://wagering:wagering_local@localhost:5432/wagering",
     );
@@ -34,6 +35,15 @@ describe("environment configuration", () => {
   test("rejects an invalid port", () => {
     expect(() =>
       loadEnvironment({ NODE_ENV: "development", PORT: "70000" }),
+    ).toThrow();
+  });
+
+  test("rejects an invalid worker health port", () => {
+    expect(() =>
+      loadEnvironment({
+        NODE_ENV: "development",
+        WORKER_HEALTH_PORT: "70000",
+      }),
     ).toThrow();
   });
 });

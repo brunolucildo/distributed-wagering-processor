@@ -438,7 +438,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
     );
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
   });
 
   test("unknown wallet is 404 and does not persist a transaction", async () => {
