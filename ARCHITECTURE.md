@@ -127,10 +127,10 @@ O diagrama representa responsabilidades lógicas. A API, o consumidor SQS, o pub
 | Precisão monetária        | `bigint` em unidades menores dentro de `Money` | Aritmética exata para valores de qualquer magnitude sem usar `number` para dinheiro ou depender de precisão decimal configurável. |
 | Validação HTTP            | Zod                                            | Schemas estritos já usados em configuração e contratos de wallet; evita uma segunda stack de validação.                           |
 | Testes                    | `bun test`                                     | Runner compatível com o runtime escolhido.                                                                                        |
-| Logs                      | Pino ou logger JSON equivalente                | Logs estruturados.                                                                                                                |
-| Métricas                  | `prom-client`                                  | Exposição de métricas operacionais.                                                                                               |
-| Autenticação              | Keycloak/OIDC, opcional                        | Usar Identity Provider externo se implementada.                                                                                   |
-| Ambiente local            | Docker Compose                                 | Subir API, workers, PostgreSQL e LocalStack.                                                                                      |
+| Logs                      | NestJS Logger                                  | Eventos JSON em alguns fluxos; propagação uniforme de correlação ainda incompleta.                                                |
+| Métricas                  | Não implementadas                              | O monitor de reconciliação mantém somente contador em memória; não há endpoint/exportador.                                        |
+| Autenticação              | Não implementada                               | Usar Identity Provider externo; ainda falta um port/guard de extensão no código.                                                  |
+| Ambiente local            | Docker Compose + Bun                           | Compose sobe PostgreSQL e LocalStack; API e workers são iniciados separadamente pelo mesmo entrypoint Bun.                        |
 
 ### 3.1 Restrições tecnológicas
 
@@ -514,7 +514,7 @@ Health checks não exigem autenticação. A reconciliação não corrige diverg�
 
 A paginação será baseada em cursor estável e opaco, ordenado por uma combinação única e determinística, como `createdAt` e `id`. Não dependerá de offset para percorrer um ledger que pode crescer continuamente.
 
-No Stage 2, a ordem implementada é crescente por `(created_at, id)`, com `timestamptz(3)` para preservar o cursor em `Date`. O cursor é base64url com versão e wallet, não um token de autorização; o limite padrão é 50 e valores maiores são limitados a 100. O contrato de criação é `{ playerId, currency, openingBalance }`, com UUID gerado internamente e resposta `201`. Wallet routes, wagering submit/read routes e `/health/live` estão disponíveis; `/health/ready` permanece planejado. O contrato HTTP atual está em `docs/api/openapi.yaml`.
+No Stage 2, a ordem implementada é crescente por `(created_at, id)`, com `timestamptz(3)` para preservar o cursor em `Date`. O cursor é base64url com versão e wallet, não um token de autorização; o limite padrão é 50 e valores maiores são limitados a 100. O contrato de criação é `{ playerId, currency, openingBalance }`, com UUID gerado internamente e resposta `201`. Wallet routes, wagering submit/read routes e `/health/live` estão disponíveis. O Stage 4 adicionou `/health/ready`, que verifica PostgreSQL e as filas SQS configuradas. O contrato HTTP atual está em `docs/api/openapi.yaml`.
 
 ## 14. Autenticação e segurança
 
@@ -623,17 +623,7 @@ Também verificar estados das transações, quantidade e direção dos lançamen
 
 ## 17. Ambiente local e execução
 
-O Docker Compose deve provisionar os serviços necessários para desenvolvimento e integração:
-
-- API;
-- worker de consumo SQS;
-- publisher da outbox;
-- reprocessador de referências (pode compartilhar o processo worker);
-- PostgreSQL;
-- LocalStack;
-- Keycloak somente se a autenticação for implementada.
-
-Os processos de aplicação usam o mesmo entrypoint e selecionam sua função por `WORKER_ROLE`. Worker-only processes escutam `WORKER_HEALTH_PORT` e não expõem os controllers da API; use uma porta única por processo. A configuração deve ser feita por variáveis de ambiente, com valores locais documentados e sem credenciais reais no repositório.
+O Docker Compose atualmente provisiona PostgreSQL e LocalStack; não inicia os processos de aplicação. API e workers são iniciados separadamente pelo mesmo entrypoint Bun e selecionam sua função por `WORKER_ROLE`. Worker-only processes escutam `WORKER_HEALTH_PORT` e não expõem os controllers da API; use uma porta única por processo. O fluxo com API, consumidor e publisher em três processos separados foi exercitado por integração. A configuração usa variáveis de ambiente e credenciais locais de exemplo, sem credenciais reais no repositório.
 
 O README do projeto deve documentar:
 

@@ -228,6 +228,23 @@ paths:
                 properties:
                   status:
                     const: ok
+  /health/ready:
+    get:
+      operationId: getReadiness
+      summary: Check required dependency connectivity
+      responses:
+        "200":
+          description: PostgreSQL and all configured SQS queues are reachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: At least one required dependency is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
 components:
   parameters:
     WalletId:
@@ -275,6 +292,21 @@ components:
             code: PERSISTENCE_UNAVAILABLE
             message: Persistence is temporarily unavailable. Retry with the same idempotency key.
   schemas:
+    Readiness:
+      type: object
+      required: [status, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [ok, not_ready]
+        dependencies:
+          type: object
+          required: [database, sqs]
+          properties:
+            database:
+              type: boolean
+            sqs:
+              type: boolean
     Identifier:
       type: string
       minLength: 1

@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-**Status:** Stages 0–3 delivered. Stage 4 worker flows, three independent application processes, two publisher processes, crash/restart windows, and SQS redrive are verified with PostgreSQL/LocalStack integration tests. Shutdown-timeout fault injection remains unverified on Windows because the test requires POSIX signal delivery. Stage 5 is not started. Stage 0's visual VS Code agent-picker check also remains unverified.
+**Status:** Stages 0–4 delivered. Worker flows, three independent application processes, two publisher processes, crash/restart windows, and SQS redrive are verified with PostgreSQL/LocalStack integration tests. Shutdown-timeout fault injection remains unverified on Windows because the test requires POSIX signal delivery. Stage 5 is not started. Stage 0's visual VS Code agent-picker check also remains unverified.
 **Approach:** Complete each stage's exit criteria before starting dependent work. Keep each stage reviewable and update the specs/architecture when an implementation decision changes.
 
 Agent-assisted work follows [Agent-Assisted Development Workflow](./agent-assisted-development.md). Agents are introduced in Stage 0 and used selectively for independent, bounded work in later stages; the orchestrator remains responsible for integration and verification.
@@ -86,7 +86,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Verification (2026-10-29):** 119 tests / 404 assertions pass across six files; 47 are real PostgreSQL integration tests / 229 assertions. Coverage includes 50 simultaneous identical requests, the `80.00 BRL` race against `100.00 BRL`, concurrent direct reversals, replay snapshots, rollback after injected Outbox failure, and the durable currency-mismatch migration guard. Lint, type-check, build, and format check pass. `Stage3WagerIdentity` was applied to the configured development database; a second migration run was a no-op.
 
-**Boundary:** The concurrency suite exercises one Nest process with concurrent HTTP requests and multiple PostgreSQL connections; three independent application processes have not been verified. Pending-reference rows and Outbox messages are durable, but no worker retries references or publishes events. Authentication and readiness are not implemented.
+**Boundary at the Stage 3 checkpoint:** The concurrency suite exercised one Nest process with concurrent HTTP requests and multiple PostgreSQL connections; three independent application processes had not yet been verified. Pending-reference rows and Outbox messages were durable, but no worker retried references or published events. Readiness was not yet implemented. Stage 4 subsequently delivered and tested the three-role topology, recovery workers, and readiness. Cross-process same-wallet/idempotency races remain unverified, and provider identity authentication/extension remains outstanding.
 
 **Work**
 
@@ -140,7 +140,9 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Work**
 
-- Complete structured logs, metrics, liveness/readiness, and error sanitization.
+- Complete exported operational metrics and a provider-identity extension point; authentication itself may remain out of scope if explicitly documented.
+- Run the cross-process same-wallet/idempotency race scenarios and the POSIX shutdown-timeout fault-injection test.
+- Retain the delivered structured logs, liveness/readiness, and error sanitization; add any gaps found during final review.
 - Run complete unit, integration, concurrency, migration, lint, and type-check suites.
 - Review every requirement in the challenge against implementation and tests.
 - Run a read-only reliability review of the integrated diff, triage its findings, and independently verify any fixes.

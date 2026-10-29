@@ -29,7 +29,7 @@ These requirements guide the implementation. Domain rules, wallet persistence, H
 - `BET` debits, `WIN` credits, and `LOSS` records an outcome without changing balance. `REFUND` and `ROLLBACK` reverse eligible references according to the domain specification.
 - Each balance change commits with its immutable ledger entry. Ledger update/delete is prohibited.
 - Stage 3 implements persistent idempotency and replay snapshots using PostgreSQL identity constraints and advisory locks.
-- Stage 3 combines ordered transaction-identity locks, a row-level wallet lock, and database constraints for concurrent wager requests. Cross-process behavior is not yet verified.
+- Stage 3 combines ordered transaction-identity locks, a row-level wallet lock, and database constraints for concurrent wager requests. The HTTP race cases run in one API process; concurrent same-wallet/idempotency races across API and SQS worker processes remain unverified. Stage 4 separately verifies the three-role process workflow and its crash-recovery paths.
 - Stage 4 consumes FIFO wager messages through a transactional Inbox and acknowledges only after a durable result or DLQ delivery.
 - Stage 4 publishes committed Outbox events using recoverable leases, retries, and explicit replay of exhausted events.
 - Stage 4 reprocesses and expires missing references using durable scheduling and leases.
@@ -120,14 +120,14 @@ Use the returned wallet ID with `GET /wallets/:walletId`, `GET /wallets/:walletI
 
 ## Development progress
 
-| Stage                     | Status                                                                |
-| ------------------------- | --------------------------------------------------------------------- |
-| 0: Foundation             | Implemented; visual VS Code agent selection remains unverified        |
-| 1: Domain                 | Recovered from local stash and validated                              |
-| 2: Persistence            | Delivered; finite-value and error-envelope corrections verified       |
-| 3: API and idempotency    | Delivered and verified                                                |
+| Stage                     | Status                                                                                  |
+| ------------------------- | --------------------------------------------------------------------------------------- |
+| 0: Foundation             | Implemented; visual VS Code agent selection remains unverified                          |
+| 1: Domain                 | Recovered from local stash and validated                                                |
+| 2: Persistence            | Delivered; finite-value and error-envelope corrections verified                         |
+| 3: API and idempotency    | Delivered and verified                                                                  |
 | 4: Messaging and recovery | Multi-process, crash/restart, and redrive verified; POSIX shutdown-timeout test remains |
-| 5: Operations and handoff | Not started                                                           |
+| 5: Operations and handoff | Not started                                                                             |
 
 Stage 1 recovery restored `Money`, immutable wallet and ledger entities, wager lifecycle and operation/reference/reversal rules, domain errors, integration event envelopes, and two domain test files. The recovery preserved the current Stage 0 foundation and both existing stashes.
 
@@ -135,7 +135,7 @@ Stage 1 conformance verification passed 72 tests (175 assertions): 67 domain tes
 
 Stage 2 verification passed **92 tests across five files (268 assertions)** at that stage. Current migrations include Stage 4 recovery leases and durable Inbox conflict audit records. The Stage 4 migration is covered by empty-schema up/down/up and populated conflict-record rollback refusal tests.
 
-Both `bun run db:migrate` and the compiled migration runner were exercised; repeating `up` was a no-op. The compiled API connected to PostgreSQL, answered liveness, and returned the expected `404` on a missing-wallet query. The temporary smoke-test API was stopped afterward. PostgreSQL and LocalStack remain running. Wager-processing locks, retries, and replay snapshots were implemented in Stage 3; Inbox/Outbox workers remain Stage 4 work.
+At the Stage 2 checkpoint, both `bun run db:migrate` and the compiled migration runner were exercised; repeating `up` was a no-op. The compiled API connected to PostgreSQL, answered liveness, and returned the expected `404` on a missing-wallet query. The temporary smoke-test API was stopped afterward. Wager-processing locks, retries, and replay snapshots followed in Stage 3; Inbox/Outbox workers followed in Stage 4.
 
 ### Conformance revalidation — 2026-10-29
 
