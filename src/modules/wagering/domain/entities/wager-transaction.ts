@@ -102,6 +102,12 @@ export class WagerTransaction {
 
   static create(input: CreateWagerTransaction): WagerTransaction {
     const reference = input.referenceExternalTransactionId;
+    if (reference !== undefined && !reference.trim()) {
+      throw new DomainError(
+        DomainFailureCode.INVALID_TRANSACTION,
+        "A supplied reference transaction identifier cannot be blank.",
+      );
+    }
     if (
       !input.id.trim() ||
       !input.providerId.trim() ||
@@ -173,6 +179,17 @@ export class WagerTransaction {
     amount: Money;
     occurredAt: string | Date;
   }): WagerTransaction {
+    if (
+      !input.id.trim() ||
+      !input.walletId.trim() ||
+      !input.playerId.trim() ||
+      !input.amount.isPositive()
+    ) {
+      throw new DomainError(
+        DomainFailureCode.INVALID_TRANSACTION,
+        "Opening transaction identifiers and a positive amount are required.",
+      );
+    }
     return new WagerTransaction(
       input.id,
       null,
@@ -239,6 +256,16 @@ export class WagerTransaction {
       throw new DomainError(
         DomainFailureCode.INVALID_STATE_TRANSITION,
         "Rejected transactions require a stable failure code.",
+      );
+    }
+    if (
+      nextStatus !== "REJECTED" &&
+      nextStatus !== "FAILED" &&
+      options.failureCode !== undefined
+    ) {
+      throw new DomainError(
+        DomainFailureCode.INVALID_STATE_TRANSITION,
+        "Only rejected or failed transactions can have a failure code.",
       );
     }
     if (

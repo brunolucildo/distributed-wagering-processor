@@ -125,6 +125,88 @@ describe("Money and rehydration edge cases", () => {
 });
 
 describe("Wager lifecycle edge transitions", () => {
+  test.each(["0.00", "-1.00"])(
+    "rejects an internal OPENING amount of %s",
+    (amount) => {
+      expect(() =>
+        WagerTransaction.opening({
+          id: "opening-invalid",
+          walletId: "wallet-1",
+          playerId: "player-1",
+          amount: Money.rehydrate(amount, "BRL"),
+          occurredAt: now,
+        }),
+      ).toThrow(
+        expect.objectContaining({
+          code: DomainFailureCode.INVALID_TRANSACTION,
+        }),
+      );
+    },
+  );
+
+  test.each(["id", "walletId", "playerId"] as const)(
+    "rejects an internal OPENING with a blank %s",
+    (field) => {
+      expect(() =>
+        WagerTransaction.opening({
+          id: "opening-valid",
+          walletId: "wallet-1",
+          playerId: "player-1",
+          amount: money("1.00"),
+          occurredAt: now,
+          [field]: "   ",
+        }),
+      ).toThrow(
+        expect.objectContaining({
+          code: DomainFailureCode.INVALID_TRANSACTION,
+        }),
+      );
+    },
+  );
+
+  test.each(["", "   "])(
+    "rejects a supplied blank WIN reference %j",
+    (reference) => {
+      expect(() => transaction("WIN", "win-blank", "1.00", reference)).toThrow(
+        expect.objectContaining({
+          code: DomainFailureCode.INVALID_TRANSACTION,
+        }),
+      );
+    },
+  );
+
+  test.each(["PROCESSED", "PENDING_REFERENCE"] as const)(
+    "rejects a failure code on transition to %s",
+    (status) => {
+      expect(() =>
+        transaction("BET", "invalid-failure-code").transition(status, {
+          failureCode: DomainFailureCode.INSUFFICIENT_FUNDS,
+          occurredAt: now,
+        }),
+      ).toThrow(
+        expect.objectContaining({
+          code: DomainFailureCode.INVALID_STATE_TRANSITION,
+        }),
+      );
+    },
+  );
+
+  test("resolves a pending reference without retaining a failure code", () => {
+    const waiting = transaction("WIN", "win-resolved", "1.00", "bet-reference");
+    const processed = waiting.transition("PROCESSED", { occurredAt: now });
+    expect(processed.failureCode).toBeNull();
+    expect(() =>
+      waiting.transition("PROCESSED", {
+        failureCode: DomainFailureCode.REFERENCE_NOT_FOUND,
+        occurredAt: now,
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        code: DomainFailureCode.INVALID_STATE_TRANSITION,
+      }),
+    );
+  });
+
   test("allows FAILED only with the permanent transaction-specific code", () => {
     const pending = transaction("BET", "failed-pending");
     const pendingReference = transaction(
@@ -362,7 +444,7 @@ describe("Operation, reference, and reversal edge cases", () => {
     expect(duplicate.wallet?.balance.toString()).toBe("90.00");
   });
 
-  test("keeps the wallet balance equal to opening balance plus signed ledger entries", () => {
+  test("reconstructs the wallet from the complete ledger without counting OPENING twice", () => {
     const opening = Wallet.open({
       id: "wallet-1",
       playerId: "player-1",
@@ -421,7 +503,14 @@ describe("Operation, reference, and reversal edge cases", () => {
     if (afterRollbackWin.ledgerEntry)
       entries.push(afterRollbackWin.ledgerEntry);
 
-    const signedChanges = entries
+    const computedBalance = entries.reduce(
+      (sum, entry) =>
+        sum.add(
+          entry.direction === "CREDIT" ? entry.amount : entry.amount.negate(),
+        ),
+      Money.zero("BRL"),
+    );
+    const laterChanges = entries
       .slice(1)
       .reduce(
         (sum, entry) =>
@@ -430,8 +519,11 @@ describe("Operation, reference, and reversal edge cases", () => {
           ),
         Money.zero("BRL"),
       );
-    const computedBalance = opening.wallet.balance.add(signedChanges);
 
+    expect(entries[0]?.transactionId).toBe("opening-equation");
+    expect(
+      opening.wallet.balance.add(laterChanges).equals(computedBalance),
+    ).toBe(true);
     expect(afterLoss.ledgerEntry).toBeNull();
     expect(wallet.version).toBe(5);
     expect(wallet.balance.toString()).toBe("100.00");

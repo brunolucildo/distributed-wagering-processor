@@ -97,9 +97,9 @@ Liveness returns `{"status":"ok"}` without checking dependencies. Persistence, m
 
 Stage 1 recovery restored `Money`, immutable wallet and ledger entities, wager lifecycle and operation/reference/reversal rules, domain errors, integration event envelopes, and two domain test files. The recovery preserved the current Stage 0 foundation and both existing stashes.
 
-Verification after recovery: `bun test` passed 62 tests across four files (162 assertions); `bun run lint`, `bun run typecheck`, `bun run build`, and `bun run format:check` passed. Of these, 57 tests cover the domain and five cover the foundation. The missing reversal-uniqueness-check guard and its regression test were recovered as well. Database-level atomic uniqueness and concurrency remain Stage 2 work.
+Verification after the conformance fixes: `bun test` passed 72 tests across four files (175 assertions); `bun run lint`, `bun run typecheck`, `bun run build`, and `bun run format:check` passed. Of these, 67 tests cover the domain and five cover the foundation. Regressions cover invalid internal openings, blank supplied references, and failure codes on non-failure states. Ledger reconstruction now explicitly includes `OPENING` exactly once. Database-level atomic uniqueness and concurrency remain Stage 2 work.
 
-Earlier Stage 0 verification also exercised container health, PostgreSQL connectivity, queue provisioning, and HTTP liveness; those infrastructure checks were not repeated as part of stash recovery.
+Git attributes now enforce LF for text files, including the Linux queue initialization script and Prettier-managed source files. After normalization and a LocalStack restart, `/_localstack/init/ready` reported the script `SUCCESSFUL`, all three expected queues were listed, and both Compose services were healthy. Earlier PostgreSQL connectivity and HTTP liveness checks were not repeated in this conformance pass.
 
 Workspace agents are in `.github/agents/`: Domain Engineer, Test Engineer, and Reliability Reviewer. Their files and invocations were previously checked, but selection in the VS Code Chat picker requires a visual check with the Copilot harness selected. Agents are development tools, not runtime dependencies.
 

@@ -33,7 +33,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Goal:** Implement financial rules without infrastructure dependencies.
 
-**Delivery status:** Recovered selectively from the local stash and verified against the synchronized Stage 0 foundation: 57 domain tests plus five foundation tests pass, along with lint, type-check, build, and formatting. `Money` uses exact `bigint` minor units with decimal-string input/output. Persistent, atomic reversal uniqueness remains Stage 2 work.
+**Delivery status:** Recovered selectively from the local stash and checked against the synchronized Stage 0 foundation. After conformance fixes, 67 domain tests plus five foundation tests pass, along with lint, type-check, build, and formatting. Factories reject invalid openings and blank references; transitions prohibit failure codes on non-failure states. `Money` uses exact `bigint` minor units with decimal-string input/output. Ledger reconstruction includes `OPENING` exactly once. Persistent, atomic reversal uniqueness remains Stage 2 work.
 
 **Work**
 

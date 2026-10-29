@@ -243,6 +243,8 @@ Estados previstos:
 
 `PROCESSED`, `REJECTED` e `FAILED` são estados terminais. Tentativas de transição a partir deles devem ser tratadas como erro de programação. `OPENING` é interno e não pode ser submetido pela API ou pela fila.
 
+A factory interna de `OPENING` exige identificadores não vazios e valor positivo; abertura de saldo zero não cria transação. Referências fornecidas, inclusive as opcionais de `WIN`, não podem ser vazias. Apenas `REJECTED` e `FAILED` carregam código de falha; os demais estados não aceitam `failureCode`.
+
 A identidade externa da operação deve considerar o provedor e o identificador externo. A chave de idempotência é obrigatória no contrato HTTP; uma chave reutilizada com payload diferente deve gerar conflito.
 
 ### 5.4 `WalletLedgerEntry`
@@ -393,7 +395,7 @@ Regras adicionais:
 - A referência deve corresponder ao mesmo provider, player, wallet, moeda e rodada.
 - `REFUND` só referencia `BET`.
 - `ROLLBACK` pode referenciar `BET`, `WIN` ou `REFUND`.
-- Uma referência não pode ser revertida duas vezes pelo mesmo tipo de operação.
+- Uma transação pode ser diretamente revertida no máximo uma vez, independentemente do tipo de reversão (`REFUND` ou `ROLLBACK`). Reverter um `REFUND` não torna a aposta original elegível para uma segunda reversão.
 - O valor de reversão deve ser igual ao da referência.
 - Reversão que causaria saldo negativo deve ser rejeitada com `failureCode` específico.
 - Operações rejeitadas não alteram saldo nem geram lançamento no ledger.
@@ -593,6 +595,8 @@ Os testes de integração usam PostgreSQL e LocalStack reais em containers. Mock
 Após cada cenário de teste, verificar:
 
 `wallet.balance == saldo reconstruído pelo ledger`
+
+O saldo reconstruído é a soma assinada de todos os lançamentos, partindo de zero e incluindo o crédito `OPENING` quando presente. Se o cálculo partir do saldo inicial, deve excluir `OPENING` da soma para não contar a abertura duas vezes.
 
 Também verificar estados das transações, quantidade e direção dos lançamentos, e ausência de eventos perdidos no fluxo de outbox.
 

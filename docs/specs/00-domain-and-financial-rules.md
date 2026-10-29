@@ -19,7 +19,7 @@
 - A wallet opening with a positive initial balance creates one internal `OPENING` transaction and one credit ledger entry atomically. A zero-balance opening creates neither.
 - Each balance-changing transaction creates exactly one ledger entry for its wallet. `LOSS` and rejected transactions create none.
 - A ledger entry is immutable and records amount, direction, wallet, transaction, before/after balances, and timestamp. It is valid only when `before + amount = after` for credits or `before - amount = after` for debits, in the same currency.
-- The stored wallet balance MUST equal its opening balance plus the signed sum of its ledger entries. Reconciliation reports discrepancies and never repairs them automatically.
+- The stored wallet balance MUST equal the signed sum of all its ledger entries, including the `OPENING` credit when present, starting from zero. Equivalently, it equals its opening balance plus the signed sum of subsequent entries, excluding `OPENING`. The opening MUST NOT be counted twice. Reconciliation reports discrepancies and never repairs them automatically.
 
 ## 3. Wager identity and lifecycle
 
@@ -49,6 +49,8 @@ Allowed transitions:
 | Non-terminal | `FAILED` | Only for a permanent, transaction-specific processing failure classified as non-retryable |
 
 All terminal states are immutable. Transitions not listed above are programming errors. `FAILED` is not a label for exhausted retries: transient infrastructure errors MUST NOT be persisted as `FAILED`, and retry exhaustion alone does not make an error permanent. A permanent failure must be durably recorded when the database is available.
+
+Only `REJECTED` and `FAILED` carry a failure code; `PENDING`, `PENDING_REFERENCE`, and `PROCESSED` MUST NOT carry one. Every supplied reference identifier must be non-blank, including optional `WIN` references. The internal `OPENING` factory requires non-blank identifiers and a positive amount; zero opening is represented by the wallet without a transaction.
 
 The external transaction identity is `(providerId, externalTransactionId)`. An idempotency key is unique within a provider. The same key and same canonical business payload is a replay; the same key with a different payload is a conflict. Reusing an external transaction identity with a different key is also a conflict.
 
