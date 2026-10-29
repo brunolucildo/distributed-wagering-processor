@@ -69,8 +69,13 @@ Authentication is not a scored requirement of the challenge. If omitted, the dec
 - [Messaging and recovery](./docs/specs/03-messaging-and-recovery.md)
 - [Operations and verification](./docs/specs/04-operations-and-verification.md)
 - [Implementation roadmap](./docs/plans/implementation-roadmap.md)
+- [Agent-assisted development workflow](./docs/plans/agent-assisted-development.md)
 
 The challenge brief is retained locally as `READMEChallenge.md` and excluded from Git. The requirements needed to understand and run the project must remain documented in this tracked README and the linked documentation.
+
+## AI-assisted development
+
+The project plans to use reusable VS Code workspace agents for bounded domain implementation, focused test authoring, and read-only reliability review. Agent definitions are planned for `.github/agents/` in Stage 0; orchestration begins with domain and test work in Stage 1 and continues selectively where tasks can be separated safely. The orchestrator remains responsible for integration, design decisions, and running verification. These agents are development tooling only and are not part of the application runtime. See the [agent-assisted workflow](./docs/plans/agent-assisted-development.md).
 
 ## Development progress
 
