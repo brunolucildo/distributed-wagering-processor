@@ -108,6 +108,12 @@ docker compose up -d
 bun run start:dev
 ```
 
+If Bun reports missing dependency files after installation, retry with a fresh cache outside the OneDrive-synced workspace:
+
+```powershell
+bun install --force --frozen-lockfile --cache-dir "$env:LOCALAPPDATA\Bun\stage0-clean-cache" --backend=copyfile
+```
+
 The Compose stack provisions `wager-transactions.fifo`, `wager-transactions-dlq.fifo`, and `integration-events.fifo` in LocalStack. The wager queue has a 60-second visibility timeout and routes messages to the DLQ after five receives. The sample AWS credentials and database password are for local development only; do not use them in production.
 
 Check process liveness at `http://localhost:3000/health/live`; the expected response is `{"status":"ok"}`. This endpoint checks only that the HTTP process is alive. Database/SQS readiness checks, migrations, and application workers are not implemented yet.
@@ -125,13 +131,13 @@ bun run build
 ### Current Stage 0 verification
 
 - `bun run typecheck`, `bun run build`, and `bun run format:check`: pass.
-- `bun test`: 5 tests pass; `bun run lint`: pass after a temporary npm install populated the local dependency tree.
-- `bun install --frozen-lockfile`: exits successfully, but a clean isolated Bun install left transitive modules such as `@eslint-community/eslint-utils` unavailable. The npm install was only used to validate the code and is not the documented setup path.
+- Bun `1.4.4`: `bun install --force --frozen-lockfile --cache-dir "$env:LOCALAPPDATA\Bun\stage0-clean-cache" --backend=copyfile` completed; `bun run lint`, `bun test` (5 tests), type-check, and build then passed.
+- The default Bun cache on the development machine produced incomplete package contents. Installing with a fresh cache restored the missing ESLint and `debug` files; the fallback command above is documented for this case.
 - `docker compose config --quiet`: pass. PostgreSQL and LocalStack started and reached healthy status; `pg_isready` succeeded, and LocalStack listed all three expected queues.
 - `docker compose logs localstack`: confirmed the queue initialization script ran successfully after normalizing its line endings for the Linux container.
 - `bun run start:dev` started the API, and `curl.exe --fail http://localhost:3000/health/live` returned `{"status":"ok"}`.
 
-Stage 0 remains in progress until clean Bun installation and VS Code agent selection are verified.
+Stage 0 remains in progress until VS Code agent selection is verified.
 
 ## Verification requirements
 
