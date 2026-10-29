@@ -33,6 +33,8 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Goal:** Implement financial rules without infrastructure dependencies.
 
+**Delivery status:** Domain code is absent from the synchronized checkout. Earlier session validation (57 domain tests plus four foundation tests) was not included in the documentation-only commit. Restore or redeliver the implementation and rerun validation before marking this stage complete. Exact `bigint` minor units behind `Money` remain the documented design; persistent reversal uniqueness belongs to Stage 2.
+
 **Work**
 
 - Implement `Money`, wallet, wager transaction, immutable ledger entry, domain errors/failure codes, and integration event types.
@@ -43,7 +45,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 **Exit criteria**
 
 - Domain package imports no NestJS, ORM, or AWS modules.
-- Monetary values remain decimal strings/decimal-library values without conversion to `number`.
+- Monetary values remain decimal strings or exact `bigint` minor units behind `Money`, without conversion to `number`.
 - All cases in [00 — Domain and Financial Rules](../specs/00-domain-and-financial-rules.md) pass.
 
 ## Stage 2 — Database and wallet lifecycle

@@ -98,23 +98,23 @@ O diagrama representa responsabilidades lógicas. A API, o consumidor SQS, o pub
 
 ## 3. Stack tecnológica
 
-| Responsabilidade | Escolha | Motivo |
-|---|---|---|
-| Runtime / package manager | Bun 1.x | Requisito do desafio. |
-| Linguagem | TypeScript em modo strict | Tipagem explícita e contratos claros. |
-| Framework HTTP | NestJS | Requisito do desafio e suporte a módulos/DI. |
-| Banco de dados | PostgreSQL | Fonte de verdade transacional. |
-| ORM | MikroORM | Opção preferencial do desafio; Unit of Work e suporte a transações/locking. |
-| Mensageria | AWS SQS | Requisito do desafio. |
-| SQS local | LocalStack | Integração local por Docker Compose. |
-| Migrations | MikroORM Migrations | Schema versionado e reproduzível. |
-| Precisão monetária | `decimal.js` dentro de `Money` | Aritmética decimal sem usar `number` para valores monetários. |
-| Validação HTTP | `class-validator` e `class-transformer` | Validação de DTOs na borda da aplicação. |
-| Testes | `bun test` | Runner compatível com o runtime escolhido. |
-| Logs | Pino ou logger JSON equivalente | Logs estruturados. |
-| Métricas | `prom-client` | Exposição de métricas operacionais. |
-| Autenticação | Keycloak/OIDC, opcional | Usar Identity Provider externo se implementada. |
-| Ambiente local | Docker Compose | Subir API, workers, PostgreSQL e LocalStack. |
+| Responsabilidade          | Escolha                                        | Motivo                                                                                                                            |
+| ------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime / package manager | Bun 1.x                                        | Requisito do desafio.                                                                                                             |
+| Linguagem                 | TypeScript em modo strict                      | Tipagem explícita e contratos claros.                                                                                             |
+| Framework HTTP            | NestJS                                         | Requisito do desafio e suporte a módulos/DI.                                                                                      |
+| Banco de dados            | PostgreSQL                                     | Fonte de verdade transacional.                                                                                                    |
+| ORM                       | MikroORM                                       | Opção preferencial do desafio; Unit of Work e suporte a transações/locking.                                                       |
+| Mensageria                | AWS SQS                                        | Requisito do desafio.                                                                                                             |
+| SQS local                 | LocalStack                                     | Integração local por Docker Compose.                                                                                              |
+| Migrations                | MikroORM Migrations                            | Schema versionado e reproduzível.                                                                                                 |
+| Precisão monetária        | `bigint` em unidades menores dentro de `Money` | Aritmética exata para valores de qualquer magnitude sem usar `number` para dinheiro ou depender de precisão decimal configurável. |
+| Validação HTTP            | `class-validator` e `class-transformer`        | Validação de DTOs na borda da aplicação.                                                                                          |
+| Testes                    | `bun test`                                     | Runner compatível com o runtime escolhido.                                                                                        |
+| Logs                      | Pino ou logger JSON equivalente                | Logs estruturados.                                                                                                                |
+| Métricas                  | `prom-client`                                  | Exposição de métricas operacionais.                                                                                               |
+| Autenticação              | Keycloak/OIDC, opcional                        | Usar Identity Provider externo se implementada.                                                                                   |
+| Ambiente local            | Docker Compose                                 | Subir API, workers, PostgreSQL e LocalStack.                                                                                      |
 
 ### 3.1 Restrições tecnológicas
 
@@ -196,17 +196,17 @@ test/
 
 ### 5.1 `Money` — Value Object
 
-`Money` é imutável e encapsula valor decimal e moeda.
+`Money` é imutável e encapsula unidades menores inteiras (`bigint`) e moeda.
 
 Responsabilidades:
 
-- receber e serializar `amount` como string decimal com duas casas;
+- receber e serializar `amount` como string decimal com duas casas, convertendo para unidades menores inteiras sem passar por `number`;
 - rejeitar entradas vazias, `NaN`, `Infinity`, notação científica e escala superior a duas casas;
 - impedir operações entre moedas diferentes;
 - disponibilizar operações de soma, subtração, negação, comparação e igualdade;
 - não depender de decorators ou tipos monetários do ORM.
 
-O valor monetário não deve ser convertido para `number` em nenhuma etapa do domínio. A persistência pode usar `NUMERIC` com precisão/escala explícitas, desde que a reidratação preserve exatamente o valor.
+O valor monetário não deve ser convertido para `number` em nenhuma etapa do domínio. A escolha de `bigint` em unidades menores evita limites de precisão aritmética configurável; a persistência pode usar `NUMERIC` com precisão/escala explícitas, desde que a reidratação preserve exatamente o valor.
 
 ### 5.2 `Wallet` — Aggregate Root
 
@@ -274,13 +274,13 @@ O PostgreSQL é a fonte de verdade do saldo, das transações, do ledger e dos r
 
 ### 6.1 Tabelas principais
 
-| Tabela | Finalidade |
-|---|---|
-| `wallets` | Saldo materializado, moeda, versão e timestamps. |
-| `wager_transactions` | Operações, identidade externa, chave/hash de idempotência, estado, referência e código de falha. |
-| `wallet_ledger_entries` | Histórico imutável de movimentos de saldo. |
-| `inbox_messages` | Deduplicação persistente de mensagens recebidas. |
-| `outbox_messages` | Eventos pendentes ou publicados e metadados de retry. |
+| Tabela                  | Finalidade                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------ |
+| `wallets`               | Saldo materializado, moeda, versão e timestamps.                                                 |
+| `wager_transactions`    | Operações, identidade externa, chave/hash de idempotência, estado, referência e código de falha. |
+| `wallet_ledger_entries` | Histórico imutável de movimentos de saldo.                                                       |
+| `inbox_messages`        | Deduplicação persistente de mensagens recebidas.                                                 |
+| `outbox_messages`       | Eventos pendentes ou publicados e metadados de retry.                                            |
 
 Nomes e colunas finais podem ser adaptados, desde que as garantias sejam mantidas.
 
@@ -378,13 +378,13 @@ São garantias complementares e devem ser testadas separadamente.
 
 ## 9. Regras de negócio
 
-| Operação | Efeito | Lançamento | Regra principal |
-|---|---|---|---|
-| `BET` | Débito | `DEBIT` | Rejeitar se o saldo for insuficiente. |
-| `WIN` | Crédito | `CREDIT` | Validar a referência quando fornecida e exigida pelo contrato. |
-| `LOSS` | Sem mudança de saldo | Nenhum | Registrar o resultado. |
-| `REFUND` | Crédito | `CREDIT` | Reverter uma `BET` processada uma única vez. |
-| `ROLLBACK` | Efeito inverso da referência | Direção inversa | Reverter uma transação permitida uma única vez. |
+| Operação   | Efeito                       | Lançamento      | Regra principal                                                |
+| ---------- | ---------------------------- | --------------- | -------------------------------------------------------------- |
+| `BET`      | Débito                       | `DEBIT`         | Rejeitar se o saldo for insuficiente.                          |
+| `WIN`      | Crédito                      | `CREDIT`        | Validar a referência quando fornecida e exigida pelo contrato. |
+| `LOSS`     | Sem mudança de saldo         | Nenhum          | Registrar o resultado.                                         |
+| `REFUND`   | Crédito                      | `CREDIT`        | Reverter uma `BET` processada uma única vez.                   |
+| `ROLLBACK` | Efeito inverso da referência | Direção inversa | Reverter uma transação permitida uma única vez.                |
 
 Regras adicionais:
 
@@ -475,17 +475,17 @@ O limite de tentativas e o TTL são decisões de configuração que precisam ser
 
 Endpoints previstos:
 
-| Método | Endpoint | Finalidade |
-|---|---|---|
-| `POST` | `/wallets` | Criar wallet e registrar `OPENING`/ledger quando o saldo inicial for positivo. |
-| `GET` | `/wallets/:walletId` | Consultar saldo e versão. |
-| `GET` | `/wallets/:walletId/ledger` | Consultar ledger por cursor opaco e estável. |
-| `GET` | `/wagering/transactions/:transactionId` | Consultar transação pelo ID interno. |
-| `GET` | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consultar por identidade externa. |
-| `POST` | `/wagering/transactions` | Submeter uma operação com `Idempotency-Key`. |
-| `POST` | `/wallets/:walletId/reconciliation` | Comparar saldo materializado com o saldo calculado pelo ledger. |
-| `GET` | `/health/live` | Verificar se o processo está vivo. |
-| `GET` | `/health/ready` | Verificar dependências necessárias para operar. |
+| Método | Endpoint                                                              | Finalidade                                                                     |
+| ------ | --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `POST` | `/wallets`                                                            | Criar wallet e registrar `OPENING`/ledger quando o saldo inicial for positivo. |
+| `GET`  | `/wallets/:walletId`                                                  | Consultar saldo e versão.                                                      |
+| `GET`  | `/wallets/:walletId/ledger`                                           | Consultar ledger por cursor opaco e estável.                                   |
+| `GET`  | `/wagering/transactions/:transactionId`                               | Consultar transação pelo ID interno.                                           |
+| `GET`  | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consultar por identidade externa.                                              |
+| `POST` | `/wagering/transactions`                                              | Submeter uma operação com `Idempotency-Key`.                                   |
+| `POST` | `/wallets/:walletId/reconciliation`                                   | Comparar saldo materializado com o saldo calculado pelo ledger.                |
+| `GET`  | `/health/live`                                                        | Verificar se o processo está vivo.                                             |
+| `GET`  | `/health/ready`                                                       | Verificar dependências necessárias para operar.                                |
 
 A API deve distinguir payload inválido, conflito de idempotência, rejeição de negócio, processamento pendente e falha transitória de infraestrutura com códigos HTTP consistentes e documentados.
 
