@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-**Status:** Proposed  
+**Status:** Stages 0–3 delivered and verified to their documented boundaries; Stages 4–5 not started. Stage 0's visual VS Code agent-picker check and multi-process behavior remain unverified.
 **Approach:** Complete each stage's exit criteria before starting dependent work. Keep each stage reviewable and update the specs/architecture when an implementation decision changes.
 
 Agent-assisted work follows [Agent-Assisted Development Workflow](./agent-assisted-development.md). Agents are introduced in Stage 0 and used selectively for independent, bounded work in later stages; the orchestrator remains responsible for integration and verification.
@@ -12,6 +12,8 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 ## Stage 0 — Project foundation
 
 **Goal:** Establish a reproducible Bun/NestJS project and local development baseline.
+
+**Delivery status:** Foundation, health, local dependencies and FIFO provisioning are present and tested. The clean-install workaround was verified previously; it was not re-executed during the 2026-10-29 revalidation. Visual selection of the custom agents in the VS Code picker remains unverified, so that exit check is still open.
 
 **Work**
 
@@ -33,7 +35,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Goal:** Implement financial rules without infrastructure dependencies.
 
-**Delivery status:** Recovered selectively from the local stash and checked against the synchronized Stage 0 foundation. After conformance fixes, 67 domain tests plus five foundation tests pass, along with lint, type-check, build, and formatting. Factories reject invalid openings and blank references; transitions prohibit failure codes on non-failure states. `Money` uses exact `bigint` minor units with decimal-string input/output. Ledger reconstruction includes `OPENING` exactly once. Persistent, atomic reversal uniqueness remains Stage 2 work.
+**Delivery status:** Recovered selectively from the local stash and checked against the synchronized Stage 0 foundation. After conformance fixes, 67 domain tests plus five foundation tests pass, along with lint, type-check, build, and formatting. Factories reject invalid openings and blank references; transitions prohibit failure codes on non-failure states. `Money` uses exact `bigint` minor units with decimal-string input/output. Ledger reconstruction includes `OPENING` exactly once. Stage 2 supplied a unique processed-reversal reference constraint; Stage 3 subsequently implemented its durable check/application protocol.
 
 **Work**
 
@@ -54,9 +56,11 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Depends on:** Stage 1.
 
-**Delivery status:** Implemented and verified: 20 real PostgreSQL integration tests plus the existing 72 tests pass (92 total, 268 assertions), as do lint, type-check, build, and formatting. The five-table schema uses exact string-mapped `NUMERIC(38,2)`, identity/reversal constraints, cross-wallet/currency foreign keys, and ledger mutation triggers. Wallet creation atomically records positive `OPENING`; zero opening has no transaction or entry. Wallet HTTP queries, wallet-scoped cursor pagination, and non-mutating reconciliation are wired. Empty-schema up/down/up and populated rollback refusal pass. Migrations never run automatically at startup.
+**Delivery status:** Delivered with both audit corrections verified: 31 real PostgreSQL integration tests plus the existing 72 tests pass (103 total, 309 assertions), as do lint, type-check, build, and formatting. The five-table schema uses exact string-mapped `NUMERIC(38,2)`, identity/reversal constraints, cross-wallet/currency foreign keys, and ledger mutation triggers. Wallet creation atomically records positive `OPENING`; zero opening has no transaction or entry. Wallet HTTP queries, wallet-scoped cursor pagination, and non-mutating reconciliation are wired. Empty-schema up/down/up and populated initial-schema rollback refusal pass. Migrations never run automatically at startup.
 
-**Boundary:** Stage 2 provides the schema and wallet lifecycle, not the shared transactional wagering use case. Wager locks/retries, replay semantics, the concurrent-bet scenario, and three-process verification belong to Stage 3. Inbox/Outbox processing belongs to Stage 4. A single-transaction five-table rollback test verifies infrastructure only. HTTP reconciliation discrepancies currently use structured logging and a process-local counter; metrics export remains Stage 5.
+**Revalidation gate (2026-10-29):** Closed for the two reported gaps. `RejectNonFiniteMoney` adds finite-value constraints without editing the applied initial migration; tests cover SQL `NaN`/infinities, populated corrective down/up and explicit refusal of corrupt legacy data without rewriting it. The globally registered HTTP filter now handles malformed JSON with the stable sanitized envelope, tested via real HTTP requests. The correction was applied to the local database and repeated `up` was a no-op. Stage 3 subsequently completed as recorded below.
+
+**Boundary:** Stage 2 provides the schema and wallet lifecycle. Stage 3 adds the HTTP transactional wagering use case. Inbox/Outbox processing belongs to Stage 4. A single-transaction five-table rollback test verifies infrastructure only. HTTP reconciliation discrepancies currently use structured logging and a process-local counter; metrics export remains Stage 5.
 
 **Work**
 
@@ -78,15 +82,22 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Depends on:** Stages 1 and 2.
 
+**Delivery status:** Delivered and verified. The API now validates and normalizes submissions, hashes canonical business fields, uses ordered database advisory locks for identity/idempotency followed by a wallet row lock, and persists the wager, wallet/version, ledger, response snapshot, and Outbox events atomically. Durable replay, conflict, rejection, and pending-reference outcomes are implemented. The OpenAPI contract is checked in at `docs/api/openapi.yaml`.
+
+**Verification (2026-10-29):** 119 tests / 404 assertions pass across six files; 47 are real PostgreSQL integration tests / 229 assertions. Coverage includes 50 simultaneous identical requests, the `80.00 BRL` race against `100.00 BRL`, concurrent direct reversals, replay snapshots, rollback after injected Outbox failure, and the durable currency-mismatch migration guard. Lint, type-check, build, and format check pass. `Stage3WagerIdentity` was applied to the configured development database; a second migration run was a no-op.
+
+**Boundary:** The concurrency suite exercises one Nest process with concurrent HTTP requests and multiple PostgreSQL connections; three independent application processes have not been verified. Pending-reference rows and Outbox messages are durable, but no worker retries references or publishes events. Authentication and readiness are not implemented.
+
 **Work**
 
 - Implement canonical payload hashing and persistent identity/idempotency handling.
 - Implement the shared `ProcessWager` application use case and database transaction/locking policy.
 - Add wager submission and transaction query endpoints with stable response/error mapping.
+- Document those contracts in OpenAPI. `providerId` remains an untrusted business field; authenticated provider identity is handoff work, not an implemented Stage 3 feature.
 - Add tests for replay snapshots, payload conflicts, reversal uniqueness, and concurrent wallet updates.
-- Use agents on separate implementation/test surfaces after fixing API and persistence contracts; have the reliability reviewer inspect concurrency and idempotency changes read-only.
+- Keep financial transaction-boundary changes under one integration owner; use a read-only reliability review for future changes affecting persistence invariants.
 
-**Exit criteria**
+**Exit criteria — met for the documented single-process scope**
 
 - Fifty concurrent identical submissions cause one financial effect.
 - Concurrent `80.00 BRL` bets satisfy the required scenario.

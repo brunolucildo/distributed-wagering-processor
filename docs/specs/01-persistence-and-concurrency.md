@@ -1,6 +1,6 @@
 # 01 — Persistence and Concurrency
 
-**Status:** Ready for implementation  
+**Status:** Stages 2–3 persistence work delivered and verified for one application process; finite-money, HTTP, and wagering corrections are covered by the evidence below. Multi-process verification remains open.
 **Source of truth:** PostgreSQL.
 
 ## 1. Tables and durable constraints
@@ -20,7 +20,7 @@ The ledger MUST be append-only at the database boundary, not just in domain code
 
 `NUMERIC` columns MUST have an explicit precision and scale sufficient for the documented transaction limits. API/domain amounts stay strings; ORM mapping MUST not convert persisted values through JavaScript `number`.
 
-The Stage 2 persistence limit is `NUMERIC(38,2)`: at most 36 integer digits and two fractional digits, up to `999999999999999999999999999999999999.99`. Domain arithmetic remains arbitrary-size; persisted inputs outside this range or with excess scale are rejected, not rounded. ORM mappings preserve decimal strings. Ledger timestamps use millisecond precision (`timestamptz(3)`) so `(created_at, id)` cursors round-trip exactly through JavaScript `Date`.
+The Stage 2 persistence limit is `NUMERIC(38,2)`: at most 36 integer digits and two fractional digits, up to `999999999999999999999999999999999999.99`. Domain arithmetic remains arbitrary-size; API/ORM inputs outside this range or with excess scale are rejected, not rounded. ORM mappings preserve decimal strings. Arbitrary SQL bypasses that mapping: PostgreSQL rounds excess scale on assignment to `NUMERIC(38,2)`. Monetary columns MUST reject non-finite values at the database boundary as well; the corrective migration enforces this, as recorded in section 6. Ledger timestamps use millisecond precision (`timestamptz(3)`) so `(created_at, id)` cursors round-trip exactly through JavaScript `Date`.
 
 ## 2. Atomic transaction boundary
 
@@ -61,3 +61,19 @@ The initial `down` migration takes exclusive locks and refuses to drop the schem
 - Failure injection verifies wallet, transaction, ledger, inbox, and outbox writes roll back together.
 - The required concurrent `80.00 BRL` bets against `100.00 BRL` leave one processed bet, one rejected bet, balance `20.00 BRL`, and exactly one debit entry.
 - At least three independent application processes can run the concurrency test against the same database.
+
+## 6. Delivery evidence and audit corrections (2026-10-29)
+
+At the Stage 2 checkpoint, the suite passed 103 tests / 309 assertions, including 31 real PostgreSQL integration tests. It covered the Stage 2 constraints, atomic wallet opening, cursor pagination, reconciliation, empty-schema up/down/up and refusal to downgrade the populated initial schema. A five-table failure-injection test covered the SQL transaction mechanism only. Stage 3 subsequently implemented the HTTP wager transaction; the remaining multi-process acceptance criterion is still open (see section 7).
+
+The audit found that `NaN` bypassed the original non-negative/positive and ledger-equation checks. The new `RejectNonFiniteMoney` migration adds explicit finite-value checks to `wallets.balance`, `wager_transactions.amount`, and ledger `amount`, `balance_before`, `balance_after`, without modifying the applied initial migration. Regression tests prove SQL rejection of `NaN` and infinities and preservation of valid maximum amounts.
+
+The corrective `up` validates existing data and fails atomically on invalid legacy rows, leaving migration history and financial data unchanged. It never silently repairs or deletes ledger records. Its `down` drops only the added constraints, preserving populated tables; this intentionally removes the additional defense, so reapply it before resuming writes. Both populated corrective down/up and the full empty-schema down/up are tested. The malformed-JSON correction in spec 02 is also covered by real HTTP regression tests. Both audit gaps are closed.
+
+## 7. Stage 3 delivery evidence (2026-10-29)
+
+The HTTP wagering use case now applies ordered PostgreSQL transaction advisory locks for provider/external identity and provider/idempotency key, then locks the wallet row and, when supplied, the referenced transaction. It retries supported transient failures up to three attempts with short jitter. Transaction state, wallet/version, ledger entry, response snapshot, and applicable Outbox event(s) are persisted in the same SQL transaction. Outbox publication and pending-reference reprocessing remain Stage 4 work.
+
+`Stage3WagerIdentity` replaces the wager-to-wallet composite currency foreign key with a wallet-ID foreign key so currency-mismatch rejections can be durably recorded. Ledger entries retain their wallet/currency/transaction constraints. Its `down` refuses to restore the old constraint while mismatched transactions exist. The migration was applied to the configured development database after isolated integration tests passed; a repeated `up` was a no-op.
+
+The complete suite passes 119 tests / 404 assertions, including 47 real PostgreSQL integration tests / 229 assertions. Coverage includes 50 identical concurrent HTTP submissions with one financial effect, concurrent `80.00 BRL` bets against a `100.00 BRL` balance, concurrent cross-kind reversals, transaction rollback on injected Outbox failure, replay snapshots, transient whole-transaction retry, and durable currency-mismatch rejection that blocks an unsafe migration rollback. These tests run against one Nest application and multiple PostgreSQL connections; they do not prove the required three-process deployment scenario.

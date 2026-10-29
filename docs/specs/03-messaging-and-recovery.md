@@ -1,6 +1,6 @@
 # 03 — Messaging and Recovery
 
-**Status:** Ready for implementation  
+**Status:** FIFO provisioning, event types and Inbox/Outbox schema delivered; consumer, publisher and recovery behavior remain Stage 4 work.
 **Broker:** AWS SQS API via LocalStack in local development.
 
 ## 1. Queues and message contracts

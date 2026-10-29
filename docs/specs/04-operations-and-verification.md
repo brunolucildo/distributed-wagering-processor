@@ -1,6 +1,6 @@
 # 04 — Operations and Verification
 
-**Status:** Ready for implementation
+**Status:** Foundation, Stage 2 persistence, and Stage 3 single-process HTTP/PostgreSQL verification delivered. SQS workers/recovery, readiness, exported metrics, and multi-process hardening remain planned.
 
 ## 1. Runtime processes
 
@@ -63,9 +63,15 @@ Tests that mock PostgreSQL/SQS may supplement, but must not replace, the integra
 
 ## 5. Delivery and completion checks
 
-- `bun test` runs unit tests; documented scripts run integration and concurrency suites.
+- `bun run test:unit` runs the unit/foundation tests without external infrastructure. `bun run test:integration` runs PostgreSQL integration tests, including the HTTP wagering concurrency cases; `bun test` discovers all suites and requires PostgreSQL.
 - Docker Compose starts the required local dependencies and application roles from a clean checkout.
 - Database migrations apply cleanly to an empty database and pass down/up validation.
 - `README.md` documents prerequisites, environment setup, Compose, queues, migrations, process startup, HTTP examples, and test commands.
 - `ARCHITECTURE.md` matches implemented behavior and records deviations/trade-offs.
 - No monetary calculation uses `number`; no ledger mutation path exists; no event is published before its originating commit.
+
+## 6. Current verification boundary (2026-10-29)
+
+The complete Stage 0–3 suite passes 119 tests / 404 assertions, including 47 real PostgreSQL integration tests / 229 assertions; lint, type-check, build and formatting also pass with Node16 module resolution. Compose currently starts dependencies only; the API is started with Bun, and worker roles are not implemented. LocalStack provisioning and queue attributes are checked, but no automated SQS delivery/recovery suite exists yet. The wager concurrency cases use one Nest process and do not verify three independent application processes.
+
+Reconciliation uses structured log content and a process-local discrepancy counter; neither a metrics endpoint nor full JSON logging/correlation is delivered. PostgreSQL connection refusal was probed through the real repository and mapped to a sanitized `503` by the wallet filter. Both audit gaps from specs 01–02 are now corrected: finite-value checks protect all persisted monetary columns, and the global HTTP filter sanitizes malformed JSON into the stable `400` envelope. Regression tests cover these exact behaviors as well as safe migration rollback and refusal of invalid legacy data.

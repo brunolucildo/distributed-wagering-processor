@@ -1,6 +1,6 @@
 # 00 — Domain and Financial Rules
 
-**Status:** Ready for implementation  
+**Status:** Pure domain implemented and tested (Stage 1); durable/application guarantees are tracked in specs 01–03.
 **Scope:** Pure domain behavior and financial outcomes, independent of NestJS, MikroORM, PostgreSQL, and SQS.
 
 ## 1. Money
