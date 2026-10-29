@@ -124,7 +124,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
   test("migration upgrades, safely downgrades an empty schema, and upgrades again", async () => {
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     await database.orm.getMigrator().down({ to: 0 });
     const tables = await execute<{ name: string | null }[]>(
       "select to_regclass('wallets')::text as name",
@@ -133,7 +133,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     await database.orm.getMigrator().up();
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   test("positive opening is atomic and round-trips exact money above JS integer precision", async () => {
@@ -255,7 +255,9 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
 
   test("corrective migration down/up preserves populated financial data", async () => {
     const wallet = await open("23.45");
-    await database.orm.getMigrator().down();
+    await database.orm.getMigrator().down({
+      to: "RejectNonFiniteMoney",
+    });
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
     ).toHaveLength(1);
@@ -264,7 +266,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     await database.orm.getMigrator().up();
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     await expect(
       execute("update wallets set balance = 'NaN'::numeric where id = ?", [
         wallet.id,
@@ -687,7 +689,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     expect((await service.listLedger(wallet.id)).entries).toHaveLength(1);
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   test("HTTP wallet lifecycle, stable errors and reconciliation counter use real persistence", async () => {

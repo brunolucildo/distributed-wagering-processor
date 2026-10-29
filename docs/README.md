@@ -4,13 +4,14 @@ This documentation translates the challenge requirements and `ARCHITECTURE.md` i
 
 ## Specifications
 
-| Document | Scope |
-|---|---|
-| [00 — Domain and Financial Rules](./specs/00-domain-and-financial-rules.md) | Money, wallets, wager lifecycle, ledger, reversals, invariants |
-| [01 — Persistence and Concurrency](./specs/01-persistence-and-concurrency.md) | PostgreSQL schema guarantees, migrations, transaction boundaries, locking |
-| [02 — API and Idempotency](./specs/02-api-and-idempotency.md) | HTTP contracts, validation, canonical payload hashing, response semantics |
-| [03 — Messaging and Recovery](./specs/03-messaging-and-recovery.md) | SQS, Inbox, Outbox, retries, DLQ, pending references |
-| [04 — Operations and Verification](./specs/04-operations-and-verification.md) | Configuration, health, observability, test and completion criteria |
+| Document                                                                      | Scope                                                                             |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| [00 — Domain and Financial Rules](./specs/00-domain-and-financial-rules.md)   | Money, wallets, wager lifecycle, ledger, reversals, invariants                    |
+| [01 — Persistence and Concurrency](./specs/01-persistence-and-concurrency.md) | PostgreSQL schema guarantees, migrations, transaction boundaries, locking         |
+| [02 — API and Idempotency](./specs/02-api-and-idempotency.md)                 | HTTP contracts, validation, canonical payload hashing, response semantics         |
+| [OpenAPI contract](./api/openapi.yaml)                                        | Machine-readable wallet, wagering, ledger, reconciliation, and liveness endpoints |
+| [03 — Messaging and Recovery](./specs/03-messaging-and-recovery.md)           | SQS, Inbox, Outbox, retries, DLQ, pending references                              |
+| [04 — Operations and Verification](./specs/04-operations-and-verification.md) | Configuration, health, observability, test and completion criteria                |
 
 ## Delivery plan
 
@@ -28,4 +29,4 @@ This documentation translates the challenge requirements and `ARCHITECTURE.md` i
 
 ## Current validation
 
-After the 2026-10-29 audit corrections, 103 tests / 309 assertions and the lint/type-check/build/format gates pass. Stages 0–2 are delivered; the reported [database finite-value](./specs/01-persistence-and-concurrency.md#6-delivery-evidence-and-audit-corrections-2026-10-29) and [malformed-JSON envelope](./specs/02-api-and-idempotency.md#7-wallet-http-audit-correction-2026-10-29) gaps are closed with regression tests. Stage 3 has not started.
+After the Stage 3 delivery and 2026-10-29 audit, 119 tests / 404 assertions and lint/type-check/build/format gates pass, including 47 PostgreSQL integration tests / 229 assertions. Stages 0–3 are delivered to their documented boundaries; multi-process verification, authenticated provider identity, readiness, and the Stage 4 messaging/recovery workers remain open. The [database finite-value](./specs/01-persistence-and-concurrency.md#6-delivery-evidence-and-audit-corrections-2026-10-29) and [malformed-JSON envelope](./specs/02-api-and-idempotency.md#7-wallet-http-audit-correction-2026-10-29) gaps are closed with regression tests.

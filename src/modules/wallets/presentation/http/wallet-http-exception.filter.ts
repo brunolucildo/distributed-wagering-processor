@@ -13,6 +13,11 @@ import {
   WalletNotFoundError,
 } from "../../application/wallet-errors";
 import { DomainError } from "../../domain/errors/domain-error";
+import {
+  WagerConflictError,
+  WagerNotFoundError,
+  WagerPersistenceUnavailableError,
+} from "../../../wagering/application/wager-errors";
 
 @Catch()
 export class WalletHttpExceptionFilter implements ExceptionFilter {
@@ -26,9 +31,23 @@ export class WalletHttpExceptionFilter implements ExceptionFilter {
       status = 409;
       code = "WALLET_ALREADY_EXISTS";
       message = error.message;
-    } else if (error instanceof WalletNotFoundError) {
+    } else if (error instanceof WagerConflictError) {
+      status = 409;
+      code = "IDEMPOTENCY_CONFLICT";
+      message = error.message;
+    } else if (
+      error instanceof WalletNotFoundError ||
+      error instanceof WagerNotFoundError
+    ) {
       status = 404;
-      code = "WALLET_NOT_FOUND";
+      code =
+        error instanceof WalletNotFoundError
+          ? "WALLET_NOT_FOUND"
+          : "WAGER_NOT_FOUND";
+      message = error.message;
+    } else if (error instanceof WagerPersistenceUnavailableError) {
+      status = 503;
+      code = "PERSISTENCE_UNAVAILABLE";
       message = error.message;
     } else if (error instanceof ZodError) {
       status = 400;
@@ -56,6 +75,15 @@ export class WalletHttpExceptionFilter implements ExceptionFilter {
         JSON.stringify({
           event: "wallet_request_failed",
           errorType: error instanceof Error ? error.name : "UnknownError",
+          ...(error instanceof DriverException
+            ? {
+                code: error.code,
+                ...("constraint" in error &&
+                typeof error.constraint === "string"
+                  ? { constraint: error.constraint }
+                  : {}),
+              }
+            : {}),
           status,
         }),
       );

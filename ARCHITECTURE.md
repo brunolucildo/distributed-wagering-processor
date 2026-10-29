@@ -1,22 +1,23 @@
 # ARCHITECTURE.md — Distributed Wagering Processor
 
-> **Status:** arquitetura-alvo com entregas até o Stage 2; lacunas identificadas na revalidação de 2026-10-29 corrigidas e testadas.
+> **Status:** arquitetura-alvo com entregas até o Stage 3; lacunas de conformidade e do Stage 3 corrigidas e testadas em 2026-10-29.
 > **Objetivo:** documentar as decisões, invariantes e trade-offs da implementação.  
 > **Escopo:** este documento descreve o desenho pretendido; decisões ainda não implementadas devem ser tratadas como plano, não como garantias já comprovadas.
 
 ### Estado implementado e limites da validação
 
 - **Stage 0:** Bun/NestJS, configuração, liveness, PostgreSQL/LocalStack e três filas FIFO disponíveis. A seleção visual dos agentes no VS Code continua sem confirmação.
-- **Stage 1:** domínio puro, dinheiro exato em `bigint`, factories/rehydration, estados, operações, referências e reversões. `ProcessWager` é um serviço puro, não o caso de uso transacional futuro.
-- **Stage 2:** cinco tabelas, mappings MikroORM, migrations explícitas, abertura atômica de wallet, consultas, ledger append-only, cursor e reconciliação sem reparo. O teste de rollback nas cinco tabelas valida a infraestrutura, não um pipeline de apostas/SQS implementado.
-- **Stages 3–5:** processamento transacional de apostas, hash/replay, locks/retries, API de apostas, workers, recuperação, readiness, métricas exportadas e verificação multi-processo continuam planejados.
+- **Stage 1:** domínio puro, dinheiro exato em `bigint`, factories/rehydration, estados, operações, referências e reversões. `ProcessWager` é um serviço puro.
+- **Stage 2:** cinco tabelas, mappings MikroORM, migrations explícitas, abertura atômica de wallet, consultas, ledger append-only, cursor e reconciliação sem reparo. O teste de rollback nas cinco tabelas valida a infraestrutura, não um pipeline SQS.
+- **Stage 3:** API HTTP de apostas, hash canônico, locks advisory ordenados para identidade/idempotência, lock de wallet, retries limitados, replay de snapshot e persistência atômica de transaction/wallet/ledger/Outbox.
+- **Stages 4–5:** consumidores e publishers, recuperação de referências, readiness, métricas exportadas e operação/handoff continuam planejados. Verificação com três processos permanece pendente.
 
-A revalidação inicial passou em 92 testes, mas sondagens adicionais confirmaram duas lacunas. Ambas foram corrigidas; a suíte atual passa em 103 testes / 309 assertions (31 testes de integração PostgreSQL), lint, type-check, build e formatação:
+A auditoria Stage 2 encontrou duas lacunas, ambas corrigidas. Após o Stage 3, a suíte passa em 119 testes / 404 assertions (47 testes de integração PostgreSQL / 229 assertions), além de lint, type-check, build e formatação:
 
 1. A nova migration `RejectNonFiniteMoney` rejeita `NaN` e infinitos explicitamente nas cinco colunas monetárias de wallet, transação e ledger. A migration inicial permanece intacta. Dados legados inválidos causam falha explícita na aplicação da migration, sem reparo silencioso. O `down` da correção remove apenas suas constraints e preserva os dados.
 2. O filtro existente de erros HTTP está registrado globalmente via `APP_FILTER`, não apenas no controller. JSON malformado retorna `400` com `{ code: "INVALID_REQUEST", message: "Invalid request." }`, sem expor o corpo recebido. Testes reais cobrem essa borda.
 
-As duas lacunas da auditoria estão encerradas. O Stage 3 ainda não foi iniciado. As seções seguintes mantêm os requisitos-alvo; não representam garantia de funcionalidades futuras ou validação visual dos agentes.
+Os critérios single-process do Stage 3 estão cobertos. Os eventos permanecem apenas na Outbox: não há publisher SQS ou reprocessador de referências. O teste usa uma aplicação Nest com requisições HTTP concorrentes e não comprova três processos independentes. As seções seguintes distinguem entregas atuais de requisitos-alvo ainda não validados.
 
 ## 1. Contexto e objetivos
 
@@ -336,22 +337,19 @@ A migration inicial só pode ser revertida quando todas as cinco tabelas estiver
 
 A unidade de concorrência é `walletId`. A estratégia inicial é bloquear a linha da wallet com `SELECT ... FOR UPDATE` dentro da transação PostgreSQL.
 
-Fluxo conceitual de uma operação:
+Fluxo de uma submissão HTTP:
 
-1. Validar o contrato externo e normalizar os campos de negócio.
-2. Calcular o hash canônico do payload.
-3. Iniciar a transação SQL.
-4. Resolver a identidade/idempotência de forma segura para chamadas concorrentes.
-5. Bloquear a wallet relevante.
-6. Recarregar e validar o estado persistido da operação e suas referências.
-7. Aplicar as regras de domínio.
-8. Persistir o estado da transação.
-9. Se houver mudança de saldo, atualizar a wallet e inserir o lançamento do ledger.
-10. Persistir os eventos de integração na outbox.
-11. Confirmar o commit.
-12. Só depois do commit, responder à chamada HTTP ou confirmar a mensagem SQS.
+1. Validar o contrato e normalizar os campos de negócio.
+2. Calcular SHA-256 do payload de negócio canônico.
+3. Iniciar a transação SQL e adquirir locks advisory ordenados para identidade externa e chave de idempotência.
+4. Resolver replay/conflito; se não houver resultado existente, bloquear a wallet e depois a referência aplicável.
+5. Aplicar `ProcessWager` e persistir o registro da transação.
+6. Persistir alteração da wallet, ledger e Outbox aplicáveis na mesma transação; armazenar o snapshot HTTP original.
+7. Confirmar o commit e responder usando o resultado persistido.
 
-A ordem de aquisição dos locks deve ser consistente para reduzir deadlocks. Quando houver mais de um recurso bloqueado, a implementação deve definir uma ordem estável e tratar deadlocks/transient failures com retry limitado e seguro.
+O caso HTTP está implementado. A execução SQS, confirmação de Inbox e confirmação de mensagens continuam Stage 4; o Outbox não é publicado no Stage 3.
+
+A ordem implementada é identidade/idempotência (ordem lexical estável), wallet e referência. Deadlocks e erros transitórios cobertos são repetidos até três tentativas com jitter. Os locks de identidade usam `pg_advisory_xact_lock`; correção persiste no PostgreSQL, não depende de estado em memória.
 
 ### 7.2 Por que pessimistic locking
 
@@ -377,14 +375,14 @@ O header `Idempotency-Key` é obrigatório na submissão HTTP. O valor recomenda
 
 `{providerId}:{externalTransactionId}`
 
-O `payloadHash` será calculado a partir de JSON canônico dos campos de negócio, com ordenação determinística das chaves. O header e os metadados de transporte não entram no hash. O algoritmo e os campos incluídos devem ser documentados e testados.
+O `payloadHash` é SHA-256 de JSON canônico dos campos de negócio normalizados, com ordenação determinística das chaves. O header e os metadados de transporte não entram no hash. Os campos e comportamento estão documentados e testados.
 
 ### 8.2 Comportamento esperado
 
-- Chave inexistente: registrar a identidade e processar a operação.
-- Chave existente com hash igual: retornar o resultado original, indicando replay.
-- Chave existente com hash diferente: retornar conflito sem novo efeito financeiro.
-- Duas requisições concorrentes com a mesma chave: a unicidade no banco arbitra a disputa; a requisição perdedora recupera o resultado original ou retorna conflito após comparar o hash.
+- Identidade/chave inédita: registrar a operação e processar dentro da transação.
+- Identidade/chave existente com hash igual: retornar o status e snapshot originais, indicando replay.
+- Chave ou identidade existente com hash diferente, ou com combinação inconsistente: retornar `409` sem novo efeito financeiro.
+- Requisições concorrentes com a mesma identidade são serializadas por locks advisory transacionais; constraints únicas continuam como defesa adicional.
 
 A resposta de replay deve preservar o resultado original, incluindo o saldo observado naquele processamento, e não substituir esse saldo pelo saldo atual da wallet.
 
@@ -515,7 +513,7 @@ Health checks não exigem autenticação. A reconciliação não corrige diverg�
 
 A paginação será baseada em cursor estável e opaco, ordenado por uma combinação única e determinística, como `createdAt` e `id`. Não dependerá de offset para percorrer um ledger que pode crescer continuamente.
 
-No Stage 2, a ordem implementada é crescente por `(created_at, id)`, com `timestamptz(3)` para preservar o cursor em `Date`. O cursor é base64url com versão e wallet, não um token de autorização; o limite padrão é 50 e valores maiores são limitados a 100. O contrato de criação é `{ playerId, currency, openingBalance }`, com UUID gerado internamente e resposta `201`. Os quatro endpoints de wallet e `/health/live` estão disponíveis; os demais permanecem planejados.
+No Stage 2, a ordem implementada é crescente por `(created_at, id)`, com `timestamptz(3)` para preservar o cursor em `Date`. O cursor é base64url com versão e wallet, não um token de autorização; o limite padrão é 50 e valores maiores são limitados a 100. O contrato de criação é `{ playerId, currency, openingBalance }`, com UUID gerado internamente e resposta `201`. Wallet routes, wagering submit/read routes e `/health/live` estão disponíveis; `/health/ready` permanece planejado. O contrato HTTP atual está em `docs/api/openapi.yaml`.
 
 ## 14. Autenticação e segurança
 
@@ -524,10 +522,12 @@ A autenticação não é pontuada diretamente pelo desafio. A opção preferenci
 Se a autenticação não for implementada no timebox:
 
 - documentar a decisão;
-- deixar um ponto de extensão explícito, como guard/port de identidade;
+- adicionar um ponto de extensão explícito, como guard/port de identidade, antes de expor a API a provedores externos;
 - não simular segurança real com um guard que aceite qualquer usuário em ambiente exposto;
 - manter health checks abertos conforme o contrato;
 - tratar a identidade do provider presente nas mensagens como dado sujeito a validação de domínio.
+
+No estado atual, `providerId` é validado como campo de negócio, mas ainda não existe guard/port que o vincule a uma identidade autenticada. A API não deve ser apresentada como autenticada.
 
 Outras práticas:
 
