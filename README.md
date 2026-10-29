@@ -2,7 +2,7 @@
 
 A financial backend for processing wagering transactions from multiple game providers. The system is designed to preserve wallet and ledger correctness when requests are duplicated, delivered out of order, processed concurrently, or retried after service failures.
 
-> **Project status: Specification and planning.** The repository currently contains architecture and implementation specifications; application code and runnable local infrastructure have not been implemented yet. This README describes the intended system and will be updated at the end of every roadmap stage to reflect what is actually implemented and verified.
+> **Project status: Stage 0 in progress.** The Bun/NestJS foundation, validated configuration, liveness endpoint, development tooling, workspace agents, and local PostgreSQL/LocalStack definitions are being established. Business behavior is not implemented. Local container startup remains to be verified where Docker is available.
 
 ## Project goals
 
@@ -27,7 +27,7 @@ A financial backend for processing wagering transactions from multiple game prov
 | Local orchestration | Docker Compose |
 | Tests | `bun test`, PostgreSQL and SQS-compatible containers for integration tests |
 
-These are planned choices, not a claim that the dependencies or runtime are already configured.
+NestJS, TypeScript, Bun scripts, and startup configuration are being established in Stage 0. Persistence, messaging, and domain dependencies remain future-stage work.
 
 ## Financial and processing rules
 
@@ -75,13 +75,13 @@ The challenge brief is retained locally as `READMEChallenge.md` and excluded fro
 
 ## AI-assisted development
 
-The project plans to use reusable VS Code workspace agents for bounded domain implementation, focused test authoring, and read-only reliability review. Agent definitions are planned for `.github/agents/` in Stage 0; orchestration begins with domain and test work in Stage 1 and continues selectively where tasks can be separated safely. The orchestrator remains responsible for integration, design decisions, and running verification. These agents are development tooling only and are not part of the application runtime. See the [agent-assisted workflow](./docs/plans/agent-assisted-development.md).
+Reusable VS Code workspace agents for bounded domain implementation, focused test authoring, and read-only reliability review are defined under `.github/agents/`. Orchestration begins with domain and test work in Stage 1 and continues selectively where tasks can be separated safely. The orchestrator remains responsible for integration, design decisions, and running verification. These agents are development tooling only and are not part of the application runtime. See the [agent-assisted workflow](./docs/plans/agent-assisted-development.md).
 
 ## Development progress
 
 | Stage | Scope | Status |
 |---|---|---|
-| 0 | Project foundation and local development baseline | Not started |
+| 0 | Project foundation and local development baseline | In progress |
 | 1 | Domain model and unit tests | Not started |
 | 2 | PostgreSQL persistence, migrations, wallets, and ledger | Not started |
 | 3 | Wager processing, HTTP API, and idempotency | Not started |
@@ -92,7 +92,46 @@ At the end of **each stage**, update this README with the delivered behavior, ac
 
 ## Local setup and commands
 
-**Not available yet.** The project foundation, dependency manifests, Compose file, and executable scripts have not been created. Setup instructions and verified commands will be added in Stage 0 and maintained as implementation progresses.
+### Prerequisites
+
+- Bun 1.x
+- Docker with Docker Compose
+
+### Start the local baseline
+
+From the repository root, copy the local-only environment example, install the locked dependencies, start PostgreSQL and LocalStack, then run the API:
+
+```powershell
+Copy-Item .env.example .env
+bun install --frozen-lockfile
+docker compose up -d
+bun run start:dev
+```
+
+The Compose stack provisions `wager-transactions.fifo`, `wager-transactions-dlq.fifo`, and `integration-events.fifo` in LocalStack. The wager queue has a 60-second visibility timeout and routes messages to the DLQ after five receives. The sample AWS credentials and database password are for local development only; do not use them in production.
+
+Check process liveness at `http://localhost:3000/health/live`; the expected response is `{"status":"ok"}`. This endpoint checks only that the HTTP process is alive. Database/SQS readiness checks, migrations, and application workers are not implemented yet.
+
+### Verification commands
+
+```powershell
+bun test
+bun run lint
+bun run typecheck
+bun run format:check
+bun run build
+```
+
+### Current Stage 0 verification
+
+- `bun run typecheck`, `bun run build`, and `bun run format:check`: pass.
+- `bun test`: 5 tests pass; `bun run lint`: pass after a temporary npm install populated the local dependency tree.
+- `bun install --frozen-lockfile`: exits successfully, but a clean isolated Bun install left transitive modules such as `@eslint-community/eslint-utils` unavailable. The npm install was only used to validate the code and is not the documented setup path.
+- `docker compose config --quiet`: pass. PostgreSQL and LocalStack started and reached healthy status; `pg_isready` succeeded, and LocalStack listed all three expected queues.
+- `docker compose logs localstack`: confirmed the queue initialization script ran successfully after normalizing its line endings for the Linux container.
+- `bun run start:dev` started the API, and `curl.exe --fail http://localhost:3000/health/live` returned `{"status":"ok"}`.
+
+Stage 0 remains in progress until clean Bun installation and VS Code agent selection are verified.
 
 ## Verification requirements
 
