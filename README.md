@@ -2,7 +2,7 @@
 
 A modular financial backend designed to preserve wallet and ledger correctness under duplicate requests, out-of-order delivery, concurrency, and retries.
 
-> **Project status: Stage 0 foundation.** The current checkout contains Bun/NestJS bootstrap, validated configuration, liveness, local PostgreSQL/LocalStack infrastructure, and workspace agents. Stage 1 domain code is not present in this checkout; earlier development-session results must not be interpreted as a committed delivery.
+> **Project status: Stage 1 domain recovered and validated.** The checkout contains the Stage 0 foundation and the pure financial domain recovered selectively from a local stash. Persistence, message processing, and wagering HTTP endpoints remain future work.
 
 ## Technology
 
@@ -13,14 +13,14 @@ A modular financial backend designed to preserve wallet and ledger correctness u
 | HTTP framework | NestJS |
 | Database | PostgreSQL |
 | ORM and migrations (planned) | MikroORM |
-| Monetary arithmetic (planned) | Exact `bigint` minor units behind `Money`, with decimal-string input/output |
+| Monetary arithmetic | Exact `bigint` minor units behind `Money`, with decimal-string input/output |
 | Messaging | AWS SQS API via LocalStack |
 | Local orchestration | Docker Compose |
 | Tests | `bun test`; real-container integration and concurrency tests planned |
 
 ## Required financial and processing behavior
 
-The following are requirements, not implemented financial functionality:
+These requirements guide the implementation. Pure domain rules are implemented; database, HTTP, and messaging guarantees are not yet implemented:
 
 - Monetary input/output uses decimal strings with exactly two fractional digits, never JavaScript `number` for monetary arithmetic.
 - The initial operational currency is BRL; cross-currency operations are rejected.
@@ -89,13 +89,17 @@ Liveness returns `{"status":"ok"}` without checking dependencies. Persistence, m
 | Stage | Status |
 |---|---|
 | 0: Foundation | Implemented; visual VS Code agent selection remains unverified |
-| 1: Domain | Implementation must be restored or redelivered; absent from this checkout |
+| 1: Domain | Recovered from local stash and validated |
 | 2: Persistence | Not started |
 | 3: API and idempotency | Not started |
 | 4: Messaging and recovery | Not started |
 | 5: Operations and handoff | Not started |
 
-Earlier Stage 0 verification exercised tests, lint, type-check, build, formatting, container health, PostgreSQL connectivity, queue provisioning, and HTTP liveness. After branch synchronization, rerun these commands before claiming the current checkout verified. Earlier 61-test domain results belong to a prior working tree whose domain files were not included in the documentation commit.
+Stage 1 recovery restored `Money`, immutable wallet and ledger entities, wager lifecycle and operation/reference/reversal rules, domain errors, integration event envelopes, and two domain test files. The recovery preserved the current Stage 0 foundation and both existing stashes.
+
+Verification after recovery: `bun test` passed 62 tests across four files (162 assertions); `bun run lint`, `bun run typecheck`, `bun run build`, and `bun run format:check` passed. Of these, 57 tests cover the domain and five cover the foundation. The missing reversal-uniqueness-check guard and its regression test were recovered as well. Database-level atomic uniqueness and concurrency remain Stage 2 work.
+
+Earlier Stage 0 verification also exercised container health, PostgreSQL connectivity, queue provisioning, and HTTP liveness; those infrastructure checks were not repeated as part of stash recovery.
 
 Workspace agents are in `.github/agents/`: Domain Engineer, Test Engineer, and Reliability Reviewer. Their files and invocations were previously checked, but selection in the VS Code Chat picker requires a visual check with the Copilot harness selected. Agents are development tools, not runtime dependencies.
 

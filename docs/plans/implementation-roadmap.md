@@ -33,7 +33,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Goal:** Implement financial rules without infrastructure dependencies.
 
-**Delivery status:** Domain code is absent from the synchronized checkout. Earlier session validation (57 domain tests plus four foundation tests) was not included in the documentation-only commit. Restore or redeliver the implementation and rerun validation before marking this stage complete. Exact `bigint` minor units behind `Money` remain the documented design; persistent reversal uniqueness belongs to Stage 2.
+**Delivery status:** Recovered selectively from the local stash and verified against the synchronized Stage 0 foundation: 57 domain tests plus five foundation tests pass, along with lint, type-check, build, and formatting. `Money` uses exact `bigint` minor units with decimal-string input/output. Persistent, atomic reversal uniqueness remains Stage 2 work.
 
 **Work**
 
