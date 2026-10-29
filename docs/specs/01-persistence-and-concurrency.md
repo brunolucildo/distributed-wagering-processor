@@ -20,6 +20,8 @@ The ledger MUST be append-only at the database boundary, not just in domain code
 
 `NUMERIC` columns MUST have an explicit precision and scale sufficient for the documented transaction limits. API/domain amounts stay strings; ORM mapping MUST not convert persisted values through JavaScript `number`.
 
+The Stage 2 persistence limit is `NUMERIC(38,2)`: at most 36 integer digits and two fractional digits, up to `999999999999999999999999999999999999.99`. Domain arithmetic remains arbitrary-size; persisted inputs outside this range or with excess scale are rejected, not rounded. ORM mappings preserve decimal strings. Ledger timestamps use millisecond precision (`timestamptz(3)`) so `(created_at, id)` cursors round-trip exactly through JavaScript `Date`.
+
 ## 2. Atomic transaction boundary
 
 One application operation uses one PostgreSQL transaction for all applicable writes:
@@ -49,6 +51,8 @@ Any unexpected persistence or infrastructure error rolls back all writes. The ap
 - Each migration MUST have a safe, executable down migration. Data-destructive rollback is not acceptable for the initial schema; if a future change cannot safely restore data, it must be split or explicitly gated and reviewed before implementation.
 - Validate both upgrade from an empty database and downgrade/upgrade round trips in integration tests.
 - Never edit an already-applied migration to change deployed behavior; add a new migration.
+
+The initial `down` migration takes exclusive locks and refuses to drop the schema if any of the five application tables contains data. Its supported rollback is an empty-schema rollback; financial data must not be discarded. Integration tests use uniquely named temporary databases and never reset the configured development database.
 
 ## 5. Persistence acceptance criteria
 

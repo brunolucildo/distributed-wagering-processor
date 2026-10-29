@@ -1,6 +1,6 @@
 # Agent-Assisted Development Workflow
 
-**Status:** Planned  
+**Status:** Workspace agents available; Stage 0–2 execution recorded below
 **Purpose:** Demonstrate practical creation and orchestration of project-specific coding agents while keeping financial correctness and delivery accountability explicit.
 
 ## 1. Scope
@@ -61,3 +61,11 @@ The project may describe agent-assisted work as completed only when the developm
 - any rejected agent suggestions or unresolved limitations that affected the result.
 
 Do not claim that agents independently guaranteed financial correctness. Correctness is demonstrated by database constraints, implementation review, and passing tests.
+
+### Stage 2 execution
+
+One bounded implementation agent owned `src/database/` only: MikroORM mappings/configuration, the initial migration, and its CLI. The orchestrator owned the non-overlapping application ports, repositories, wallet HTTP wiring, documentation, and integration tests. A separate test-authoring agent was not needed for this slice.
+
+Integration review added strict processed-reversal reference and permanent-failure checks, used PostgreSQL constraint metadata for wallet conflicts, and disabled migration snapshot generation to keep temporary test-database files out of the source tree. Bun required an explicit AJV 8 runtime peer for the migration toolchain.
+
+Actual verification: 92 tests / 268 assertions, including 20 real PostgreSQL integration tests; lint, type-check, build, and formatting passed. The initial migration was applied to the development database and a repeated `up` made no changes. The compiled migration runner and compiled API liveness/missing-wallet query also passed. No persistent wagering pipeline, SQS delivery guarantees, or multi-process financial concurrency were claimed.

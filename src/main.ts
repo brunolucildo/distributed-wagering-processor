@@ -7,6 +7,7 @@ import { loadEnvironment } from "./config/environment";
 async function bootstrap(): Promise<void> {
   const environment = loadEnvironment();
   const app = await NestFactory.create(AppModule);
+  app.enableShutdownHooks();
 
   await app.listen(environment.PORT);
   Logger.log(
