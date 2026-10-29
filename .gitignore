@@ -1,1 +1,8 @@
 READMEChallenge.md
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+coverage/
+.eslintcache
