@@ -206,7 +206,7 @@ Responsabilidades:
 - disponibilizar operações de soma, subtração, negação, comparação e igualdade;
 - não depender de decorators ou tipos monetários do ORM.
 
-O valor monetário não deve ser convertido para `number` em nenhuma etapa do domínio. A escolha de `bigint` em unidades menores evita limites de precisão aritmética configurável; a persistência pode usar `NUMERIC` com precisão/escala explícitas, desde que a reidratação preserve exatamente o valor.
+O valor monetário não deve ser convertido para `number` em nenhuma etapa do domínio. A escolha de `bigint` em unidades menores evita limites de precisão aritmética configurável. A persistência usa `NUMERIC(38,2)`, com limite de 36 dígitos inteiros e duas casas decimais: `999999999999999999999999999999999999.99`. O domínio continua exato para valores maiores, mas a fronteira de persistência os rejeita, assim como entradas com escala excedente, sem arredondar ou converter para `number`.
 
 ### 5.2 `Wallet` — Aggregate Root
 
@@ -311,6 +311,8 @@ As constraints exatas devem refletir a semântica do domínio e o tratamento de 
 - Cada mudança de schema deve ser revisável.
 - Reversões devem ser implementadas quando forem seguras e viáveis; mudanças destrutivas de dados podem exigir procedimento operacional específico.
 - Testes de integração devem iniciar com banco limpo e validar as migrations.
+
+A migration inicial só pode ser revertida quando todas as cinco tabelas estiverem vazias. O `down` bloqueia as tabelas antes de verificar e recusa a operação se houver dados; não existe rollback destrutivo automático de dados financeiros. As migrations são executadas explicitamente, nunca por atualização automática do schema no startup da API.
 
 ## 7. Concorrência e transações financeiras
 

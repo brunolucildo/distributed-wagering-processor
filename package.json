@@ -11,9 +11,17 @@
     "lint": "eslint src test eslint.config.mjs",
     "format": "prettier --write src test package.json tsconfig.json tsconfig.build.json eslint.config.mjs docker-compose.yml .github/agents/*.md",
     "format:check": "prettier --check src test package.json tsconfig.json tsconfig.build.json eslint.config.mjs docker-compose.yml .github/agents/*.md",
-    "test": "bun test"
+    "test": "bun test",
+    "test:unit": "bun test test/unit test/environment.test.ts test/health.test.ts",
+    "db:migrate": "bun run src/database/migrate.ts up",
+    "db:rollback": "bun run src/database/migrate.ts down",
+    "test:integration": "bun test test/integration"
   },
   "dependencies": {
+    "@mikro-orm/core": "^6.6.0",
+    "@mikro-orm/migrations": "^6.6.0",
+    "@mikro-orm/postgresql": "^6.6.0",
+    "ajv": "^8.13.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",

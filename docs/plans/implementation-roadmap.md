@@ -54,6 +54,10 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Depends on:** Stage 1.
 
+**Delivery status:** Implemented and verified: 20 real PostgreSQL integration tests plus the existing 72 tests pass (92 total, 268 assertions), as do lint, type-check, build, and formatting. The five-table schema uses exact string-mapped `NUMERIC(38,2)`, identity/reversal constraints, cross-wallet/currency foreign keys, and ledger mutation triggers. Wallet creation atomically records positive `OPENING`; zero opening has no transaction or entry. Wallet HTTP queries, wallet-scoped cursor pagination, and non-mutating reconciliation are wired. Empty-schema up/down/up and populated rollback refusal pass. Migrations never run automatically at startup.
+
+**Boundary:** Stage 2 provides the schema and wallet lifecycle, not the shared transactional wagering use case. Wager locks/retries, replay semantics, the concurrent-bet scenario, and three-process verification belong to Stage 3. Inbox/Outbox processing belongs to Stage 4. A single-transaction five-table rollback test verifies infrastructure only. HTTP reconciliation discrepancies currently use structured logging and a process-local counter; metrics export remains Stage 5.
+
 **Work**
 
 - Configure MikroORM and PostgreSQL mapping without lossy decimal conversion.
