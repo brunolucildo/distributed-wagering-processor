@@ -1,6 +1,6 @@
 # 04 — Operations and Verification
 
-**Status:** Foundation, Stage 2 persistence, and Stage 3 single-process HTTP/PostgreSQL verification delivered. SQS workers/recovery, readiness, exported metrics, and multi-process hardening remain planned.
+**Status:** API/worker roles, readiness, Stage 4 messaging/recovery, and a three-process API/consumer/publisher workflow are implemented and covered by PostgreSQL/LocalStack tests. The shutdown-timeout fault-injection test is skipped on Windows and needs POSIX CI. Exported metrics, authenticated provider identity (or a code-level identity extension point), and cross-process wager/idempotency race tests remain open.
 
 ## 1. Runtime processes
 
@@ -11,7 +11,7 @@ The repository is one modular NestJS application with independently runnable rol
 - outbox publisher;
 - pending-reference reprocessor.
 
-Roles may share a worker process if each responsibility can be independently started, stopped, and observed. Docker Compose provisions PostgreSQL and LocalStack plus the selected application roles. No production credentials are committed.
+Roles may share a worker process if each responsibility can be independently started, stopped, and observed. Docker Compose provisions PostgreSQL and LocalStack only; start application roles separately with Bun and `WORKER_ROLE`. The integration suite has exercised separate API, consumer, and publisher processes. No production credentials are committed.
 
 ## 2. Configuration
 
@@ -19,19 +19,21 @@ Configuration is environment-driven and validated at startup. At minimum define:
 
 - `NODE_ENV`, `PORT`, `DATABASE_URL`;
 - SQS endpoint, region, credentials for local use, and queue names;
-- worker role/enabled flags;
-- receive batch size and graceful-shutdown timeout;
-- retry/lease settings from the messaging specification;
-- log level and metrics port.
+- worker role and worker-health/API ports;
+- bounded graceful-shutdown timeout;
+- retry and lease policies defined in the messaging implementation.
+
+The current environment schema does not expose a configurable receive batch size, log level, or metrics port. Do not document these as supported runtime settings until implemented.
 
 Defaults must be safe for local development and must not silently mask missing required production configuration. Log redacted effective configuration at startup.
 
 ## 3. Health and observability
 
 - `GET /health/live` reports process liveness without dependency checks.
-- `GET /health/ready` checks PostgreSQL and any SQS dependency required by that process. Return non-success when a required dependency prevents its role from operating.
-- Emit structured JSON logs with correlation, message, transaction, wallet, and provider identifiers when available. Do not log full financial payloads, credentials, tokens, or secrets.
-- Expose metrics for transaction outcomes, replays/conflicts, consumer retries/DLQ, lock/deadlock retries, processing latency, outbox pending count/oldest age, and reconciliation mismatches.
+- `GET /health/ready` checks PostgreSQL and all three configured SQS queues (`wager`, `DLQ`, and integration events), returning `503` if any dependency check fails.
+- Worker and recovery paths emit structured JSON event logs with identifiers where available; correlation identifiers are not consistently propagated across all surfaces.
+- Reconciliation discrepancies are logged and counted in a process-local counter. There is no exported metrics endpoint yet.
+- Required exported metrics remain outstanding: transaction outcomes, replays/conflicts, consumer retries/DLQ, lock/deadlock retries, processing latency, outbox pending count/oldest age, and reconciliation mismatches.
 - Reconciliation must report, log, and metric discrepancies; never silently alter balances or ledger entries.
 
 ## 4. Test layers
@@ -59,6 +61,8 @@ Required end-to-end scenarios:
 9. Temporary PostgreSQL/SQS unavailability produces safe retry and recovery.
 10. Every scenario verifies wallet balance against a ledger reconstruction.
 
+Evidence currently covers the same-request and competing-bet HTTP races within one Nest process, plus independent API/consumer/publisher roles and two concurrent publisher processes. A race of duplicate/conflicting financial requests across distinct API/consumer processes is not yet demonstrated.
+
 Tests that mock PostgreSQL/SQS may supplement, but must not replace, the integration and concurrency tests above.
 
 ## 5. Delivery and completion checks
@@ -72,6 +76,10 @@ Tests that mock PostgreSQL/SQS may supplement, but must not replace, the integra
 
 ## 6. Current verification boundary (2026-10-29)
 
-The complete Stage 0–3 suite passes 119 tests / 404 assertions, including 47 real PostgreSQL integration tests / 229 assertions; lint, type-check, build and formatting also pass with Node16 module resolution. Compose currently starts dependencies only; the API is started with Bun, and worker roles are not implemented. LocalStack provisioning and queue attributes are checked, but no automated SQS delivery/recovery suite exists yet. The wager concurrency cases use one Nest process and do not verify three independent application processes.
+The current full suite ran **136 tests / 461 assertions**: 135 passed and the POSIX-only shutdown-timeout test was skipped on Windows. The 14 Stage 4 PostgreSQL/LocalStack integration cases cover separate API/consumer/publisher processes, two publishers claiming disjoint batches, Inbox commit-before-ACK and Outbox publish-before-confirm crash/restart recovery, and five-receive source-to-DLQ redrive, in addition to the earlier readiness, inbox, retry, and pending-reference cases. Lint, type-check, build, and format checks pass with Node16 module resolution.
 
-Reconciliation uses structured log content and a process-local discrepancy counter; neither a metrics endpoint nor full JSON logging/correlation is delivered. PostgreSQL connection refusal was probed through the real repository and mapped to a sanitized `503` by the wallet filter. Both audit gaps from specs 01–02 are now corrected: finite-value checks protect all persisted monetary columns, and the global HTTP filter sanitizes malformed JSON into the stable `400` envelope. Regression tests cover these exact behaviors as well as safe migration rollback and refusal of invalid legacy data.
+The integration harness provisions uniquely named temporary databases and queues; it does not reset the configured development database. The shutdown-timeout test injects a blocked database transaction and checks process exit/rollback, but requires POSIX SIGTERM semantics and was not executed on Windows. The Stage 3 HTTP race tests still use one Nest process; multi-process financial race behavior remains unverified even though the three-role workflow is verified.
+
+Readiness is implemented for PostgreSQL and configured SQS queues. Reconciliation discrepancy monitoring is a structured log plus process-local counter, not an exported metric. The project does not yet expose the required metrics endpoint, nor does it wire an authenticated provider identity or a code-level identity extension point. The database finite-value checks and malformed-JSON error-envelope corrections remain covered by regression tests.
+
+Docker Compose starts PostgreSQL and LocalStack, not application roles. Run the API/workers with the documented Bun entrypoint and unique `WORKER_HEALTH_PORT` values. Keep the challenge-level gaps above visible until tests or code close them.

@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-**Status:** Stages 0–3 delivered and verified to their documented boundaries; Stages 4–5 not started. Stage 0's visual VS Code agent-picker check and multi-process behavior remain unverified.
+**Status:** Stages 0–4 delivered. Worker flows, three independent application processes, two publisher processes, crash/restart windows, and SQS redrive are verified with PostgreSQL/LocalStack integration tests. Shutdown-timeout fault injection remains unverified on Windows because the test requires POSIX signal delivery. Stage 5 is not started. Stage 0's visual VS Code agent-picker check also remains unverified.
 **Approach:** Complete each stage's exit criteria before starting dependent work. Keep each stage reviewable and update the specs/architecture when an implementation decision changes.
 
 Agent-assisted work follows [Agent-Assisted Development Workflow](./agent-assisted-development.md). Agents are introduced in Stage 0 and used selectively for independent, bounded work in later stages; the orchestrator remains responsible for integration and verification.
@@ -86,7 +86,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Verification (2026-10-29):** 119 tests / 404 assertions pass across six files; 47 are real PostgreSQL integration tests / 229 assertions. Coverage includes 50 simultaneous identical requests, the `80.00 BRL` race against `100.00 BRL`, concurrent direct reversals, replay snapshots, rollback after injected Outbox failure, and the durable currency-mismatch migration guard. Lint, type-check, build, and format check pass. `Stage3WagerIdentity` was applied to the configured development database; a second migration run was a no-op.
 
-**Boundary:** The concurrency suite exercises one Nest process with concurrent HTTP requests and multiple PostgreSQL connections; three independent application processes have not been verified. Pending-reference rows and Outbox messages are durable, but no worker retries references or publishes events. Authentication and readiness are not implemented.
+**Boundary at the Stage 3 checkpoint:** The concurrency suite exercised one Nest process with concurrent HTTP requests and multiple PostgreSQL connections; three independent application processes had not yet been verified. Pending-reference rows and Outbox messages were durable, but no worker retried references or published events. Readiness was not yet implemented. Stage 4 subsequently delivered and tested the three-role topology, recovery workers, and readiness. Cross-process same-wallet/idempotency races remain unverified, and provider identity authentication/extension remains outstanding.
 
 **Work**
 
@@ -110,12 +110,18 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Depends on:** Stage 3.
 
+**Delivery status:** Consumer, transactional Inbox, leased Outbox publisher, failed-event replay, pending-reference recovery, readiness, role selection, and bounded worker shutdown are implemented. The Stage 4 migration adds recoverable reference leases and durable conflicting Inbox payload records.
+
+**Verification (2026-10-29):** 136 tests / 461 assertions ran across seven files: 135 passed and the POSIX-only shutdown-timeout test was skipped on Windows. The 14 Stage 4 integration cases use PostgreSQL and LocalStack; 13 passed. They verify three independent API/consumer/publisher processes, two separate publisher processes claiming disjoint batches, process death after Inbox commit/before ACK and Outbox publish/before confirmation, restart recovery without duplicate financial effects, five-receive source-to-DLQ redrive, Inbox conflicts, readiness, replay/retry, and pending-reference recovery/expiry. Lint, type-check, build, and format checks pass.
+
+**Boundary:** The shutdown-timeout integration test injects a blocked database transaction and checks process termination/rollback, but it is skipped on Windows because child-process SIGTERM is not delivered as a catchable POSIX signal there. Run it on POSIX CI before claiming that shutdown-timeout fault injection is verified. Stage 0's visual VS Code agent-picker check also remains open.
+
 **Work**
 
 - Implement SQS consumers using the shared use case and persistent Inbox.
 - Implement transactional Outbox, leased multi-publisher processing, retries, and operational handling of exhausted events.
 - Implement durable pending-reference scheduling and reprocessing.
-- Configure visibility timeout, redrive/DLQ, FIFO grouping/deduplication, and graceful shutdown.
+- Configure 60-second visibility timeout, five-receive redrive/DLQ, FIFO grouping/deduplication, and graceful shutdown.
 - Add real-container integration and crash/restart tests.
 - Delegate consumer and publisher work only where interfaces and database transaction boundaries are stable; keep shared contract changes under one owner.
 
@@ -134,7 +140,9 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Work**
 
-- Complete structured logs, metrics, liveness/readiness, and error sanitization.
+- Complete exported operational metrics and a provider-identity extension point; authentication itself may remain out of scope if explicitly documented.
+- Run the cross-process same-wallet/idempotency race scenarios and the POSIX shutdown-timeout fault-injection test.
+- Retain the delivered structured logs, liveness/readiness, and error sanitization; add any gaps found during final review.
 - Run complete unit, integration, concurrency, migration, lint, and type-check suites.
 - Review every requirement in the challenge against implementation and tests.
 - Run a read-only reliability review of the integrated diff, triage its findings, and independently verify any fixes.

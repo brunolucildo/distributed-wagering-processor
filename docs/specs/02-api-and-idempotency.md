@@ -1,6 +1,6 @@
 # 02 — API and Idempotency
 
-**Status:** Wallet and wagering routes, liveness, persistent idempotency, and the OpenAPI contract are delivered. Readiness and authentication remain unimplemented; multi-process behavior is not yet verified.
+**Status:** Wallet and wagering routes, liveness/readiness, persistent idempotency, and the OpenAPI contract are delivered. Authentication and a code-level provider identity extension point are absent. The three-role process workflow is integration-tested, but concurrent wager/idempotency races across separate API processes are not.
 **Transport:** NestJS HTTP API. JSON monetary amounts are strings.
 
 ## 1. Endpoints
@@ -76,11 +76,11 @@ The original response snapshot, including the balance at the original processing
 - Contract tests cover every status mapping, invalid payloads, `OPENING` rejection, replay response snapshots, payload conflict, and concurrent duplicate submissions.
 - [OpenAPI documentation](../api/openapi.yaml) describes request/response shapes, money string format, error codes, idempotency, and pagination.
 
-## 8. Stage 3 verification (2026-10-29)
+## 8. Stage 3 and current process verification (2026-10-29)
 
 The 119-test / 404-assertion suite passes, including 16 wager HTTP/PostgreSQL integration tests. It verifies `200`, `202`, `400`, `404`, `409`, `422`, and `503` behavior; durable pending/rejected outcomes; response-snapshot replay; payload/identity conflict; the 50-identical-request and concurrent-bet cases; and provider/external and internal-ID reads. The full integration suite contains 47 PostgreSQL tests / 229 assertions.
 
-The concurrency results cover concurrent HTTP requests to one Nest process, not multiple independently running API processes. Provider authentication, `/health/ready`, and OpenAPI UI serving are not implemented.
+The Stage 3 wager-concurrency results cover concurrent HTTP requests to one Nest process, not races between independently running API/consumer processes. Stage 4 separately proves the API/consumer/publisher process topology and crash-recovery paths; it does not prove cross-process hot-wallet/idempotency races. `/health/ready` is implemented and checks PostgreSQL plus configured SQS queues. Provider authentication and OpenAPI UI serving are not implemented; additionally, no provider-identity port/guard exists in code yet.
 
 ## 7. Wallet HTTP audit correction (2026-10-29)
 

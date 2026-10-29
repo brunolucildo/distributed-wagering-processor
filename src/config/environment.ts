@@ -5,6 +5,7 @@ const EnvironmentSchema = z.object({
     .enum(["development", "test", "production"])
     .default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  WORKER_HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(3001),
   DATABASE_URL: z
     .string()
     .url()
@@ -16,6 +17,20 @@ const EnvironmentSchema = z.object({
   SQS_WAGER_QUEUE: z.string().min(1).default("wager-transactions.fifo"),
   SQS_DLQ_QUEUE: z.string().min(1).default("wager-transactions-dlq.fifo"),
   SQS_EVENTS_QUEUE: z.string().min(1).default("integration-events.fifo"),
+  WORKER_ROLE: z
+    .enum([
+      "api",
+      "wager-consumer",
+      "outbox-publisher",
+      "reference-reprocessor",
+      "all",
+    ])
+    .default("api"),
+  WORKER_SHUTDOWN_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30_000),
 });
 
 export type AppEnvironment = z.infer<typeof EnvironmentSchema>;

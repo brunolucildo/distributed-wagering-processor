@@ -1,6 +1,6 @@
 # 01 — Persistence and Concurrency
 
-**Status:** Stages 2–3 persistence work delivered and verified for one application process; finite-money, HTTP, and wagering corrections are covered by the evidence below. Multi-process verification remains open.
+**Status:** Persistence and Stage 3 HTTP races are verified within one Nest process. Stage 4 separately verifies API/consumer/publisher process topology, Inbox/Outbox crash recovery, and two concurrent publisher processes. Cross-process financial idempotency/hot-wallet races remain open; finite-money and HTTP corrections are covered below.
 **Source of truth:** PostgreSQL.
 
 ## 1. Tables and durable constraints
@@ -64,7 +64,7 @@ The initial `down` migration takes exclusive locks and refuses to drop the schem
 
 ## 6. Delivery evidence and audit corrections (2026-10-29)
 
-At the Stage 2 checkpoint, the suite passed 103 tests / 309 assertions, including 31 real PostgreSQL integration tests. It covered the Stage 2 constraints, atomic wallet opening, cursor pagination, reconciliation, empty-schema up/down/up and refusal to downgrade the populated initial schema. A five-table failure-injection test covered the SQL transaction mechanism only. Stage 3 subsequently implemented the HTTP wager transaction; the remaining multi-process acceptance criterion is still open (see section 7).
+At the Stage 2 checkpoint, the suite passed 103 tests / 309 assertions, including 31 real PostgreSQL integration tests. It covered the Stage 2 constraints, atomic wallet opening, cursor pagination, reconciliation, empty-schema up/down/up and refusal to downgrade the populated initial schema. A five-table failure-injection test covered the SQL transaction mechanism only. Stage 3 subsequently implemented the HTTP wager transaction.
 
 The audit found that `NaN` bypassed the original non-negative/positive and ledger-equation checks. The new `RejectNonFiniteMoney` migration adds explicit finite-value checks to `wallets.balance`, `wager_transactions.amount`, and ledger `amount`, `balance_before`, `balance_after`, without modifying the applied initial migration. Regression tests prove SQL rejection of `NaN` and infinities and preservation of valid maximum amounts.
 
@@ -72,8 +72,14 @@ The corrective `up` validates existing data and fails atomically on invalid lega
 
 ## 7. Stage 3 delivery evidence (2026-10-29)
 
-The HTTP wagering use case now applies ordered PostgreSQL transaction advisory locks for provider/external identity and provider/idempotency key, then locks the wallet row and, when supplied, the referenced transaction. It retries supported transient failures up to three attempts with short jitter. Transaction state, wallet/version, ledger entry, response snapshot, and applicable Outbox event(s) are persisted in the same SQL transaction. Outbox publication and pending-reference reprocessing remain Stage 4 work.
+The HTTP wagering use case applies ordered PostgreSQL transaction advisory locks for provider/external identity and provider/idempotency key, then locks the wallet row and, when supplied, the referenced transaction. It retries supported transient failures up to three attempts with short jitter. Transaction state, wallet/version, ledger entry, response snapshot, and applicable Outbox event(s) are persisted in the same SQL transaction. Stage 4 subsequently delivered Outbox publication and pending-reference reprocessing.
 
 `Stage3WagerIdentity` replaces the wager-to-wallet composite currency foreign key with a wallet-ID foreign key so currency-mismatch rejections can be durably recorded. Ledger entries retain their wallet/currency/transaction constraints. Its `down` refuses to restore the old constraint while mismatched transactions exist. The migration was applied to the configured development database after isolated integration tests passed; a repeated `up` was a no-op.
 
-The complete suite passes 119 tests / 404 assertions, including 47 real PostgreSQL integration tests / 229 assertions. Coverage includes 50 identical concurrent HTTP submissions with one financial effect, concurrent `80.00 BRL` bets against a `100.00 BRL` balance, concurrent cross-kind reversals, transaction rollback on injected Outbox failure, replay snapshots, transient whole-transaction retry, and durable currency-mismatch rejection that blocks an unsafe migration rollback. These tests run against one Nest application and multiple PostgreSQL connections; they do not prove the required three-process deployment scenario.
+The Stage 3 suite passed 119 tests / 404 assertions, including 47 real PostgreSQL integration tests / 229 assertions. Coverage includes 50 identical concurrent HTTP submissions with one financial effect, concurrent `80.00 BRL` bets against a `100.00 BRL` balance, concurrent cross-kind reversals, transaction rollback on injected Outbox failure, replay snapshots, transient whole-transaction retry, and durable currency-mismatch rejection that blocks an unsafe migration rollback. These wager-race tests run against one Nest application and multiple PostgreSQL connections.
+
+## 8. Stage 4 and current multi-process boundary (2026-10-29)
+
+The current full suite runs 136 tests / 461 assertions (135 pass; the POSIX-only shutdown-timeout test is skipped on Windows). Stage 4 integration tests verify three separate API/consumer/publisher processes, two publisher processes claiming disjoint Outbox batches, process-kill recovery after Inbox commit/before ACK and after SQS accepts an Outbox event/before confirmation, and five-receive redrive to DLQ.
+
+This proves the process topology and those recovery paths, not concurrent same-wallet or same-idempotency-key wagers across distinct API/consumer processes. The required cross-process financial race test remains open. See [Messaging and Recovery](./03-messaging-and-recovery.md) for shutdown fault-injection limitations.

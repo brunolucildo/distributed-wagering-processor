@@ -1,22 +1,13 @@
 import { Module } from "@nestjs/common";
-import { MikroORM } from "@mikro-orm/postgresql";
-import { PersistenceModule } from "../persistence/persistence.module";
-import { WagerApplicationService } from "./application/wager-application-service";
+import { WagerApplicationModule } from "./application/wager-application.module";
 import {
   ProviderWagerController,
   WagerController,
 } from "./presentation/http/wager.controller";
 
 @Module({
-  imports: [PersistenceModule],
+  imports: [WagerApplicationModule],
   controllers: [WagerController, ProviderWagerController],
-  providers: [
-    {
-      provide: WagerApplicationService,
-      inject: [MikroORM],
-      useFactory: (orm: MikroORM) => new WagerApplicationService(orm),
-    },
-  ],
-  exports: [WagerApplicationService],
+  exports: [WagerApplicationModule],
 })
 export class WageringModule {}

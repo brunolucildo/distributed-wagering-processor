@@ -124,7 +124,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
   test("migration upgrades, safely downgrades an empty schema, and upgrades again", async () => {
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     await database.orm.getMigrator().down({ to: 0 });
     const tables = await execute<{ name: string | null }[]>(
       "select to_regclass('wallets')::text as name",
@@ -133,7 +133,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     await database.orm.getMigrator().up();
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
   });
 
   test("positive opening is atomic and round-trips exact money above JS integer precision", async () => {
@@ -266,7 +266,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     await database.orm.getMigrator().up();
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     await expect(
       execute("update wallets set balance = 'NaN'::numeric where id = ?", [
         wallet.id,
@@ -689,7 +689,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     expect((await service.listLedger(wallet.id)).entries).toHaveLength(1);
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
   });
 
   test("HTTP wallet lifecycle, stable errors and reconciliation counter use real persistence", async () => {
@@ -833,5 +833,29 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
       });
       expect(JSON.stringify(body)).not.toContain(sensitiveMarker);
     }
+  });
+
+  test("Stage 4 rollback refuses to discard Inbox conflict audit records", async () => {
+    const messageId = randomUUID();
+    await execute(
+      `insert into inbox_message_conflicts
+        (consumer_name, message_id, payload_hash, payload, received_at)
+       values ('wager-sqs-v1', ?, ?, ?::jsonb, now())`,
+      [messageId, "f".repeat(64), JSON.stringify({ messageId })],
+    );
+    await expect(
+      database.orm.getMigrator().down({ to: "Stage3WagerIdentity" }),
+    ).rejects.toThrow(
+      "Refusing to drop durable Inbox message-conflict records",
+    );
+    expect(
+      await execute<Array<{ message_id: string }>>(
+        `select message_id from inbox_message_conflicts where message_id = ?`,
+        [messageId],
+      ),
+    ).toEqual([{ message_id: messageId }]);
+    await execute(`delete from inbox_message_conflicts where message_id = ?`, [
+      messageId,
+    ]);
   });
 });

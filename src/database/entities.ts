@@ -75,6 +75,8 @@ export class WagerTransactionRecord {
   responseSnapshot: JsonRecord | null = null;
   nextRetryAt: Date | null = null;
   pendingReferenceExpiresAt: Date | null = null;
+  leaseOwner: string | null = null;
+  leaseExpiresAt: Date | null = null;
   retryCount = 0;
 }
 
@@ -228,6 +230,13 @@ export const WagerTransactionRecordSchema =
         type: "integer",
         fieldName: "retry_count",
         default: 0,
+      },
+      leaseOwner: { type: "text", fieldName: "lease_owner", nullable: true },
+      leaseExpiresAt: {
+        type: Date,
+        fieldName: "lease_expires_at",
+        columnType: "timestamptz(3)",
+        nullable: true,
       },
     },
   });
