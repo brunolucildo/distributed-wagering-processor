@@ -15,6 +15,7 @@ This documentation translates the challenge requirements and `ARCHITECTURE.md` i
 ## Delivery plan
 
 - [Implementation Roadmap](./plans/implementation-roadmap.md) — ordered stages, dependencies, deliverables, and exit criteria.
+- [Agent-Assisted Development Workflow](./plans/agent-assisted-development.md) — planned custom workspace agents, bounded delegation, orchestration, and validation rules.
 
 ## Document conventions
 
@@ -23,3 +24,4 @@ This documentation translates the challenge requirements and `ARCHITECTURE.md` i
 - **MUST** and **MUST NOT** indicate requirements. **SHOULD** indicates a strong default that may be changed only with a documented reason.
 - Specs are approved for implementation planning, not evidence that the behavior has already been implemented.
 - Changes to the implemented behavior must be reflected in the relevant specification and `ARCHITECTURE.md`.
+- Custom coding agents are development tooling only; they are not part of the wagering processor runtime.

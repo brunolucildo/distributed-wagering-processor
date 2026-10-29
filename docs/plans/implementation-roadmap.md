@@ -3,6 +3,8 @@
 **Status:** Proposed  
 **Approach:** Complete each stage's exit criteria before starting dependent work. Keep each stage reviewable and update the specs/architecture when an implementation decision changes.
 
+Agent-assisted work follows [Agent-Assisted Development Workflow](./agent-assisted-development.md). Agents are introduced in Stage 0 and used selectively for independent, bounded work in later stages; the orchestrator remains responsible for integration and verification.
+
 ## Documentation gate for every stage
 
 Before a stage is considered complete, update the root `README.md` to reflect what was delivered and verified in that stage. Include the current project status, exact setup/run/test commands that were exercised, relevant test outcomes, known limitations, and the next stage. Keep the challenge brief requirements represented in the tracked project documentation; never describe planned functionality as implemented.
@@ -16,6 +18,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 - Initialize strict TypeScript, Bun scripts, NestJS bootstrap, lint/format/test configuration.
 - Add environment validation and a minimal modular folder layout.
 - Add Docker Compose for PostgreSQL and LocalStack, with queue provisioning.
+- Create reusable workspace agent definitions under `.github/agents/` for domain implementation, test authoring, and read-only reliability review, following the agent workflow plan.
 - Add an initial README setup section.
 
 **Exit criteria**
@@ -23,6 +26,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 - A clean checkout installs and starts using documented Bun/Compose commands.
 - A minimal health endpoint responds.
 - Unit test, lint, and type-check commands work in CI/local setup.
+- The custom agents have valid frontmatter, explicit boundaries, and can be selected in the intended VS Code workflow.
 - No business logic or secrets are embedded in configuration.
 
 ## Stage 1 — Domain model
@@ -34,6 +38,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 - Implement `Money`, wallet, wager transaction, immutable ledger entry, domain errors/failure codes, and integration event types.
 - Implement operation/reversal/reference rules and explicit state transitions.
 - Add unit tests for invalid amounts, currency handling, transitions, ledger math, and all operation outcomes.
+- Orchestrate the domain implementation and independent test work with bounded agent tasks; use the reviewer only for read-only checks of meaningful financial changes.
 
 **Exit criteria**
 
@@ -53,6 +58,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 - Create reversible migrations, constraints, indexes, foreign keys, and ledger immutability trigger.
 - Implement wallet/ledger repositories, wallet creation with atomic `OPENING`, queries, pagination, and reconciliation.
 - Add PostgreSQL integration tests for constraints, transactions, migrations, and ledger reconstruction.
+- Delegate schema/migration and integration-test tasks only after their contracts are agreed and file ownership is non-overlapping.
 
 **Exit criteria**
 
@@ -72,6 +78,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 - Implement the shared `ProcessWager` application use case and database transaction/locking policy.
 - Add wager submission and transaction query endpoints with stable response/error mapping.
 - Add tests for replay snapshots, payload conflicts, reversal uniqueness, and concurrent wallet updates.
+- Use agents on separate implementation/test surfaces after fixing API and persistence contracts; have the reliability reviewer inspect concurrency and idempotency changes read-only.
 
 **Exit criteria**
 
@@ -93,6 +100,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 - Implement durable pending-reference scheduling and reprocessing.
 - Configure visibility timeout, redrive/DLQ, FIFO grouping/deduplication, and graceful shutdown.
 - Add real-container integration and crash/restart tests.
+- Delegate consumer and publisher work only where interfaces and database transaction boundaries are stable; keep shared contract changes under one owner.
 
 **Exit criteria**
 
@@ -112,6 +120,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 - Complete structured logs, metrics, liveness/readiness, and error sanitization.
 - Run complete unit, integration, concurrency, migration, lint, and type-check suites.
 - Review every requirement in the challenge against implementation and tests.
+- Run a read-only reliability review of the integrated diff, triage its findings, and independently verify any fixes.
 - Update root README and `ARCHITECTURE.md` to reflect actual commands, behavior, limitations, and any deviations from these specs.
 - Optionally run and document a load test; it is not a prerequisite for completion.
 
@@ -119,6 +128,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 - All mandatory challenge completion criteria are demonstrably met.
 - A clean environment can follow the README to run the application and tests.
+- The development handoff records agent roles used, bounded tasks, reviewed outputs, and actual validation evidence without overstating agent guarantees.
 - No unresolved high-risk behavior or undocumented deviations remain.
 
 ## Dependency overview
