@@ -15,13 +15,17 @@ This documentation translates the challenge requirements and `ARCHITECTURE.md` i
 ## Delivery plan
 
 - [Implementation Roadmap](./plans/implementation-roadmap.md) — ordered stages, dependencies, deliverables, and exit criteria.
-- [Agent-Assisted Development Workflow](./plans/agent-assisted-development.md) — planned custom workspace agents, bounded delegation, orchestration, and validation rules.
+- [Agent-Assisted Development Workflow](./plans/agent-assisted-development.md) — available custom workspace agents, bounded delegation, orchestration, and recorded validation.
 
 ## Document conventions
 
-- The challenge `README.md` defines required behavior; `ARCHITECTURE.md` defines the proposed design.
+- The original challenge brief is retained locally as untracked `READMEChallenge.md`; its required behavior is represented in these tracked specs and the root `README.md`. The root README describes actual delivery/setup, while `ARCHITECTURE.md` distinguishes the target design from current implementation and open gaps.
 - These specifications resolve implementation-level choices where the source documents leave them open. If a specification conflicts with the challenge, the challenge takes precedence and the documents must be reconciled before implementation.
 - **MUST** and **MUST NOT** indicate requirements. **SHOULD** indicates a strong default that may be changed only with a documented reason.
 - Specs are approved for implementation planning, not evidence that the behavior has already been implemented.
 - Changes to the implemented behavior must be reflected in the relevant specification and `ARCHITECTURE.md`.
 - Custom coding agents are development tooling only; they are not part of the wagering processor runtime.
+
+## Current validation
+
+After the 2026-10-29 audit corrections, 103 tests / 309 assertions and the lint/type-check/build/format gates pass. Stages 0–2 are delivered; the reported [database finite-value](./specs/01-persistence-and-concurrency.md#6-delivery-evidence-and-audit-corrections-2026-10-29) and [malformed-JSON envelope](./specs/02-api-and-idempotency.md#7-wallet-http-audit-correction-2026-10-29) gaps are closed with regression tests. Stage 3 has not started.

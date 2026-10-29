@@ -1,6 +1,6 @@
 # 02 — API and Idempotency
 
-**Status:** Ready for implementation  
+**Status:** Wallet routes and liveness delivered; malformed-JSON envelope correction verified. Wagering/idempotency and OpenAPI remain planned.
 **Transport:** NestJS HTTP API. JSON monetary amounts are strings.
 
 ## 1. Endpoints
@@ -18,6 +18,15 @@
 | `GET /health/ready` | Dependencies required by the process are reachable |
 
 `OPENING` is forbidden on the wagering submission endpoint. DTO validation rejects malformed identifiers, unsupported kinds/currencies, missing fields, non-positive wager amounts, invalid money strings, oversized inputs, and unexpected properties.
+
+### Wallet contract delivered in Stage 2
+
+- `POST /wallets` accepts exactly `{ playerId, currency, openingBalance }`; `playerId` is trimmed and limited to 1–200 characters, `currency` is validated as uppercase ISO-4217, and `openingBalance` is a non-negative two-decimal string within the persistence limit. The current HTTP string-size limit is 100 characters.
+- IDs are generated as UUIDs internally. Creation returns `201` with `{ id, playerId, currency, balance, version }`; balance is a decimal string. Duplicate `(playerId, currency)` returns `409`, not an idempotent creation replay.
+- The read route returns the same wallet shape. Ledger entries contain `id`, `walletId`, `transactionId`, `amount`, `currency`, `direction`, `balanceBefore`, `balanceAfter`, and `createdAt`, together with `nextCursor` (nullable).
+- The reconciliation route returns `200` with `walletId`, `currency`, `storedBalance`, `calculatedBalance`, `difference` (stored minus calculated), `consistent`, and `checkedEntries`. It does not repair either data source.
+- Wallet IDs in paths must be UUIDs. Missing wallets return `404`. The existing wallet exception filter is registered globally via `APP_FILTER`, so pre-controller parser errors and controller errors use `{ code, message }`.
+- Authentication/authorization and an explicit provider-identity extension point are not yet implemented; no no-op guard claims to protect these routes. The identity integration point remains a delivery task before the exposed application handoff.
 
 ## 2. Submission contract
 
@@ -62,3 +71,7 @@ The original response snapshot, including the balance at the original processing
 
 - Contract tests cover every status mapping, invalid payloads, `OPENING` rejection, replay response snapshots, payload conflict, and concurrent duplicate submissions.
 - OpenAPI documentation describes request/response shapes, money string format, error codes, idempotency, and pagination.
+
+## 7. Wallet HTTP audit correction (2026-10-29)
+
+Malformed JSON previously returned the default NestJS envelope before reaching the controller-scoped filter. The filter is now registered globally in the application module and maps HTTP `400` errors to `{ code: "INVALID_REQUEST", message: "Invalid request." }`. Real HTTP regression tests send malformed JSON to wallet creation and reconciliation, asserting exact status/body and absence of submitted payload data. Existing validated-body, conflict, missing-wallet and reconciliation behavior remains covered.

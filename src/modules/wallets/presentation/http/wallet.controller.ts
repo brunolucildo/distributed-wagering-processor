@@ -7,12 +7,10 @@ import {
   Param,
   Post,
   Query,
-  UseFilters,
 } from "@nestjs/common";
 import { z } from "zod";
 import { WalletService } from "../../application/wallet-service";
 import { ReconciliationMonitor } from "./reconciliation-monitor";
-import { WalletHttpExceptionFilter } from "./wallet-http-exception.filter";
 
 const WalletIdSchema = z.string().uuid();
 const CreateWalletSchema = z
@@ -38,7 +36,6 @@ const LedgerQuerySchema = z
   .strict();
 
 @Controller("wallets")
-@UseFilters(WalletHttpExceptionFilter)
 export class WalletController {
   constructor(
     @Inject(WalletService) private readonly wallets: WalletService,

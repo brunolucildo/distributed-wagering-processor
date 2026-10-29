@@ -8,6 +8,7 @@ import {
   WalletRecordSchema,
 } from "./entities";
 import { InitialPersistenceSchema } from "./migrations/InitialPersistenceSchema";
+import { RejectNonFiniteMoney } from "./migrations/RejectNonFiniteMoney";
 
 export function createDatabaseOptions(databaseUrl: string): Options {
   return {
@@ -27,6 +28,10 @@ export function createDatabaseOptions(databaseUrl: string): Options {
         {
           name: "InitialPersistenceSchema",
           class: InitialPersistenceSchema,
+        },
+        {
+          name: "RejectNonFiniteMoney",
+          class: RejectNonFiniteMoney,
         },
       ],
       transactional: true,

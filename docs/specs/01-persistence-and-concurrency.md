@@ -1,6 +1,6 @@
 # 01 — Persistence and Concurrency
 
-**Status:** Ready for implementation  
+**Status:** Stage 2 schema/wallet lifecycle delivered; finite-money and HTTP audit corrections verified (see section 6). Wagering concurrency is Stage 3 work.
 **Source of truth:** PostgreSQL.
 
 ## 1. Tables and durable constraints
@@ -20,7 +20,7 @@ The ledger MUST be append-only at the database boundary, not just in domain code
 
 `NUMERIC` columns MUST have an explicit precision and scale sufficient for the documented transaction limits. API/domain amounts stay strings; ORM mapping MUST not convert persisted values through JavaScript `number`.
 
-The Stage 2 persistence limit is `NUMERIC(38,2)`: at most 36 integer digits and two fractional digits, up to `999999999999999999999999999999999999.99`. Domain arithmetic remains arbitrary-size; persisted inputs outside this range or with excess scale are rejected, not rounded. ORM mappings preserve decimal strings. Ledger timestamps use millisecond precision (`timestamptz(3)`) so `(created_at, id)` cursors round-trip exactly through JavaScript `Date`.
+The Stage 2 persistence limit is `NUMERIC(38,2)`: at most 36 integer digits and two fractional digits, up to `999999999999999999999999999999999999.99`. Domain arithmetic remains arbitrary-size; API/ORM inputs outside this range or with excess scale are rejected, not rounded. ORM mappings preserve decimal strings. Arbitrary SQL bypasses that mapping: PostgreSQL rounds excess scale on assignment to `NUMERIC(38,2)`. Monetary columns MUST reject non-finite values at the database boundary as well; the corrective migration enforces this, as recorded in section 6. Ledger timestamps use millisecond precision (`timestamptz(3)`) so `(created_at, id)` cursors round-trip exactly through JavaScript `Date`.
 
 ## 2. Atomic transaction boundary
 
@@ -61,3 +61,11 @@ The initial `down` migration takes exclusive locks and refuses to drop the schem
 - Failure injection verifies wallet, transaction, ledger, inbox, and outbox writes roll back together.
 - The required concurrent `80.00 BRL` bets against `100.00 BRL` leave one processed bet, one rejected bet, balance `20.00 BRL`, and exactly one debit entry.
 - At least three independent application processes can run the concurrency test against the same database.
+
+## 6. Delivery evidence and audit corrections (2026-10-29)
+
+The current suite passes 103 tests / 309 assertions, including 31 real PostgreSQL integration tests. It covers the Stage 2 constraints, atomic wallet opening, cursor pagination, reconciliation, empty-schema up/down/up and refusal to downgrade the populated initial schema. A five-table failure-injection test covers the SQL transaction mechanism only. Sections 2–3 and the concurrent-wager/multi-process acceptance criteria still require the Stage 3 use case.
+
+The audit found that `NaN` bypassed the original non-negative/positive and ledger-equation checks. The new `RejectNonFiniteMoney` migration adds explicit finite-value checks to `wallets.balance`, `wager_transactions.amount`, and ledger `amount`, `balance_before`, `balance_after`, without modifying the applied initial migration. Regression tests prove SQL rejection of `NaN` and infinities and preservation of valid maximum amounts.
+
+The corrective `up` validates existing data and fails atomically on invalid legacy rows, leaving migration history and financial data unchanged. It never silently repairs or deletes ledger records. Its `down` drops only the added constraints, preserving populated tables; this intentionally removes the additional defense, so reapply it before resuming writes. Both populated corrective down/up and the full empty-schema down/up are tested. The malformed-JSON correction in spec 02 is also covered by real HTTP regression tests. Both audit gaps are closed.

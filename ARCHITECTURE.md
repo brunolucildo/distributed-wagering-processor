@@ -1,8 +1,22 @@
 # ARCHITECTURE.md — Distributed Wagering Processor
 
-> **Status:** proposta arquitetural inicial para o desafio técnico.  
+> **Status:** arquitetura-alvo com entregas até o Stage 2; lacunas identificadas na revalidação de 2026-10-29 corrigidas e testadas.
 > **Objetivo:** documentar as decisões, invariantes e trade-offs da implementação.  
 > **Escopo:** este documento descreve o desenho pretendido; decisões ainda não implementadas devem ser tratadas como plano, não como garantias já comprovadas.
+
+### Estado implementado e limites da validação
+
+- **Stage 0:** Bun/NestJS, configuração, liveness, PostgreSQL/LocalStack e três filas FIFO disponíveis. A seleção visual dos agentes no VS Code continua sem confirmação.
+- **Stage 1:** domínio puro, dinheiro exato em `bigint`, factories/rehydration, estados, operações, referências e reversões. `ProcessWager` é um serviço puro, não o caso de uso transacional futuro.
+- **Stage 2:** cinco tabelas, mappings MikroORM, migrations explícitas, abertura atômica de wallet, consultas, ledger append-only, cursor e reconciliação sem reparo. O teste de rollback nas cinco tabelas valida a infraestrutura, não um pipeline de apostas/SQS implementado.
+- **Stages 3–5:** processamento transacional de apostas, hash/replay, locks/retries, API de apostas, workers, recuperação, readiness, métricas exportadas e verificação multi-processo continuam planejados.
+
+A revalidação inicial passou em 92 testes, mas sondagens adicionais confirmaram duas lacunas. Ambas foram corrigidas; a suíte atual passa em 103 testes / 309 assertions (31 testes de integração PostgreSQL), lint, type-check, build e formatação:
+
+1. A nova migration `RejectNonFiniteMoney` rejeita `NaN` e infinitos explicitamente nas cinco colunas monetárias de wallet, transação e ledger. A migration inicial permanece intacta. Dados legados inválidos causam falha explícita na aplicação da migration, sem reparo silencioso. O `down` da correção remove apenas suas constraints e preserva os dados.
+2. O filtro existente de erros HTTP está registrado globalmente via `APP_FILTER`, não apenas no controller. JSON malformado retorna `400` com `{ code: "INVALID_REQUEST", message: "Invalid request." }`, sem expor o corpo recebido. Testes reais cobrem essa borda.
+
+As duas lacunas da auditoria estão encerradas. O Stage 3 ainda não foi iniciado. As seções seguintes mantêm os requisitos-alvo; não representam garantia de funcionalidades futuras ou validação visual dos agentes.
 
 ## 1. Contexto e objetivos
 
@@ -109,7 +123,7 @@ O diagrama representa responsabilidades lógicas. A API, o consumidor SQS, o pub
 | SQS local                 | LocalStack                                     | Integração local por Docker Compose.                                                                                              |
 | Migrations                | MikroORM Migrations                            | Schema versionado e reproduzível.                                                                                                 |
 | Precisão monetária        | `bigint` em unidades menores dentro de `Money` | Aritmética exata para valores de qualquer magnitude sem usar `number` para dinheiro ou depender de precisão decimal configurável. |
-| Validação HTTP            | `class-validator` e `class-transformer`        | Validação de DTOs na borda da aplicação.                                                                                          |
+| Validação HTTP            | Zod                                            | Schemas estritos já usados em configuração e contratos de wallet; evita uma segunda stack de validação.                           |
 | Testes                    | `bun test`                                     | Runner compatível com o runtime escolhido.                                                                                        |
 | Logs                      | Pino ou logger JSON equivalente                | Logs estruturados.                                                                                                                |
 | Métricas                  | `prom-client`                                  | Exposição de métricas operacionais.                                                                                               |
@@ -125,6 +139,8 @@ O diagrama representa responsabilidades lógicas. A API, o consumidor SQS, o pub
 - Não publicar eventos antes do commit financeiro.
 - Não alterar ou excluir lançamentos do ledger.
 - Não usar lock global compartilhado entre todas as wallets.
+
+A configuração TypeScript usa `module: Node16` e `moduleResolution: Node16`, substituindo o alias legado `Node`/`node10`. Sem `"type": "module"` no pacote, os arquivos atuais continuam emitidos como CommonJS; isso não migra o runtime Bun para Node.js.
 
 ## 4. Organização do código
 
@@ -206,7 +222,7 @@ Responsabilidades:
 - disponibilizar operações de soma, subtração, negação, comparação e igualdade;
 - não depender de decorators ou tipos monetários do ORM.
 
-O valor monetário não deve ser convertido para `number` em nenhuma etapa do domínio. A escolha de `bigint` em unidades menores evita limites de precisão aritmética configurável. A persistência usa `NUMERIC(38,2)`, com limite de 36 dígitos inteiros e duas casas decimais: `999999999999999999999999999999999999.99`. O domínio continua exato para valores maiores, mas a fronteira de persistência os rejeita, assim como entradas com escala excedente, sem arredondar ou converter para `number`.
+O valor monetário não deve ser convertido para `number` em nenhuma etapa do domínio. A escolha de `bigint` em unidades menores evita limites de precisão aritmética configurável. A persistência usa `NUMERIC(38,2)`, com limite de 36 dígitos inteiros e duas casas decimais: `999999999999999999999999999999999999.99`. O domínio continua exato para valores maiores, mas a API e o mapping rejeitam valores fora desse limite ou com escala excedente, sem arredondar ou converter para `number`. Essa validação de escala não se aplica a SQL arbitrário: o cast nativo de PostgreSQL arredonda escala excedente (`1.005` vira `1.01`). As constraints adicionais bloqueiam valores não finitos inclusive via SQL direto.
 
 ### 5.2 `Wallet` — Aggregate Root
 
@@ -498,6 +514,8 @@ Health checks não exigem autenticação. A reconciliação não corrige diverg�
 ### 13.1 Paginação do ledger
 
 A paginação será baseada em cursor estável e opaco, ordenado por uma combinação única e determinística, como `createdAt` e `id`. Não dependerá de offset para percorrer um ledger que pode crescer continuamente.
+
+No Stage 2, a ordem implementada é crescente por `(created_at, id)`, com `timestamptz(3)` para preservar o cursor em `Date`. O cursor é base64url com versão e wallet, não um token de autorização; o limite padrão é 50 e valores maiores são limitados a 100. O contrato de criação é `{ playerId, currency, openingBalance }`, com UUID gerado internamente e resposta `201`. Os quatro endpoints de wallet e `/health/live` estão disponíveis; os demais permanecem planejados.
 
 ## 14. Autenticação e segurança
 

@@ -43,8 +43,8 @@ export class WalletHttpExceptionFilter implements ExceptionFilter {
       message = error.message;
     } else if (error instanceof HttpException) {
       status = error.getStatus();
-      code = "HTTP_ERROR";
-      message = error.message;
+      code = status === 400 ? "INVALID_REQUEST" : "HTTP_ERROR";
+      message = status === 400 ? "Invalid request." : error.message;
     } else {
       status = error instanceof DriverException ? 503 : 500;
       code = status === 503 ? "PERSISTENCE_UNAVAILABLE" : "INTERNAL_ERROR";

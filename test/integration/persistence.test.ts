@@ -124,8 +124,8 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
   test("migration upgrades, safely downgrades an empty schema, and upgrades again", async () => {
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(1);
-    await database.orm.getMigrator().down();
+    ).toHaveLength(2);
+    await database.orm.getMigrator().down({ to: 0 });
     const tables = await execute<{ name: string | null }[]>(
       "select to_regclass('wallets')::text as name",
     );
@@ -133,7 +133,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     await database.orm.getMigrator().up();
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
   });
 
   test("positive opening is atomic and round-trips exact money above JS integer precision", async () => {
@@ -198,6 +198,113 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     row.balance = "1.001";
     await expect(em.flush()).rejects.toThrow();
     expect((await service.get(wallet.id)).balance.toString()).toBe(maximum);
+  });
+
+  test.each(["NaN", "Infinity", "-Infinity"])(
+    "database rejects %s in wallet balance and wager amount",
+    async (value) => {
+      const wallet = await open("2.00");
+      await expect(
+        execute("update wallets set balance = ?::numeric where id = ?", [
+          value,
+          wallet.id,
+        ]),
+      ).rejects.toMatchObject({ code: value === "NaN" ? "23514" : "22003" });
+      await expect(
+        insertWager({ wallet, amount: value }),
+      ).rejects.toMatchObject({
+        code: value === "NaN" ? "23514" : "22003",
+      });
+      expect((await service.get(wallet.id)).balance.toString()).toBe("2.00");
+      expect((await service.reconcile(wallet.id)).consistent).toBe(true);
+    },
+  );
+
+  test.each([
+    { amount: "NaN", before: "0.00", after: "NaN" },
+    { amount: "1.00", before: "NaN", after: "NaN" },
+    { amount: "NaN", before: "NaN", after: "NaN" },
+  ])("database rejects non-finite ledger equation %j", async (values) => {
+    const wallet = await open();
+    await expect(
+      insertEntry(wallet, await insertWager({ wallet }), values),
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "wallet_ledger_entries_money_finite_check",
+    });
+    expect((await service.listLedger(wallet.id)).entries).toHaveLength(0);
+  });
+
+  test.each(["Infinity", "-Infinity"])(
+    "database rejects %s in all ledger monetary columns",
+    async (value) => {
+      const wallet = await open();
+      const transactionId = await insertWager({ wallet });
+      for (const values of [
+        { amount: value },
+        { before: value },
+        { after: value },
+      ]) {
+        await expect(
+          insertEntry(wallet, transactionId, values),
+        ).rejects.toMatchObject({ code: "22003" });
+      }
+      expect((await service.listLedger(wallet.id)).entries).toHaveLength(0);
+    },
+  );
+
+  test("corrective migration down/up preserves populated financial data", async () => {
+    const wallet = await open("23.45");
+    await database.orm.getMigrator().down();
+    expect(
+      await database.orm.getMigrator().getExecutedMigrations(),
+    ).toHaveLength(1);
+    expect((await service.get(wallet.id)).balance.toString()).toBe("23.45");
+    expect((await service.listLedger(wallet.id)).entries).toHaveLength(1);
+    await database.orm.getMigrator().up();
+    expect(
+      await database.orm.getMigrator().getExecutedMigrations(),
+    ).toHaveLength(2);
+    await expect(
+      execute("update wallets set balance = 'NaN'::numeric where id = ?", [
+        wallet.id,
+      ]),
+    ).rejects.toMatchObject({ code: "23514" });
+    expect((await service.reconcile(wallet.id)).consistent).toBe(true);
+  });
+
+  test("corrective migration refuses legacy NaN without rewriting financial data", async () => {
+    const legacy = await createTestDatabase();
+    try {
+      await legacy.orm.getMigrator().up({ to: "InitialPersistenceSchema" });
+      const legacyService = new WalletService(
+        new PostgresWalletRepository(legacy.orm),
+        new PostgresLedgerRepository(legacy.orm),
+      );
+      const wallet = await legacyService.create({
+        playerId: randomUUID(),
+        currency: "BRL",
+        openingBalance: "0.00",
+      });
+      await legacy.orm.em.execute(
+        "update wallets set balance = 'NaN'::numeric where id = ?",
+        [wallet.id],
+      );
+      await expect(legacy.orm.getMigrator().up()).rejects.toThrow(
+        "wallets_balance_finite_check",
+      );
+      expect(
+        await legacy.orm.getMigrator().getExecutedMigrations(),
+      ).toHaveLength(1);
+      expect(
+        await legacy.orm.em.execute(
+          "select balance::text from wallets where id = ?",
+          [wallet.id],
+        ),
+      ).toEqual([{ balance: "NaN" }]);
+    } finally {
+      await legacy.close();
+    }
   });
 
   test("database and repository reject duplicate wallets, including a creation race", async () => {
@@ -575,12 +682,12 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
 
   test("down migration refuses populated schema and preserves financial rows", async () => {
     const wallet = await open("42.00");
-    await expect(database.orm.getMigrator().down()).rejects.toThrow();
+    await expect(database.orm.getMigrator().down({ to: 0 })).rejects.toThrow();
     expect((await service.get(wallet.id)).balance.toString()).toBe("42.00");
     expect((await service.listLedger(wallet.id)).entries).toHaveLength(1);
     expect(
       await database.orm.getMigrator().getExecutedMigrations(),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
   });
 
   test("HTTP wallet lifecycle, stable errors and reconciliation counter use real persistence", async () => {
@@ -704,4 +811,25 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     expect((await service.get(wallet.id)).balance.toString()).toBe("11.00");
     expect((await fetch(`${baseUrl}/health/live`)).status).toBe(200);
   }, 15_000);
+
+  test("malformed JSON uses the global stable error envelope without leaking the body", async () => {
+    const sensitiveMarker = "malformed-private-payload";
+    for (const route of [
+      "/wallets",
+      "/wallets/00000000-0000-4000-8000-000000000000/reconciliation",
+    ]) {
+      const response = await fetch(`${baseUrl}${route}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: `{"${sensitiveMarker}":`,
+      });
+      expect(response.status).toBe(400);
+      const body: unknown = await response.json();
+      expect(body).toEqual({
+        code: "INVALID_REQUEST",
+        message: "Invalid request.",
+      });
+      expect(JSON.stringify(body)).not.toContain(sensitiveMarker);
+    }
+  });
 });

@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-**Status:** Proposed  
+**Status:** Stages 0–2 delivered; both Stage 2 audit gaps corrected and tested; Stages 3–5 not started.
 **Approach:** Complete each stage's exit criteria before starting dependent work. Keep each stage reviewable and update the specs/architecture when an implementation decision changes.
 
 Agent-assisted work follows [Agent-Assisted Development Workflow](./agent-assisted-development.md). Agents are introduced in Stage 0 and used selectively for independent, bounded work in later stages; the orchestrator remains responsible for integration and verification.
@@ -12,6 +12,8 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 ## Stage 0 — Project foundation
 
 **Goal:** Establish a reproducible Bun/NestJS project and local development baseline.
+
+**Delivery status:** Foundation, health, local dependencies and FIFO provisioning are present and tested. The clean-install workaround was verified previously; it was not re-executed during the 2026-10-29 revalidation. Visual selection of the custom agents in the VS Code picker remains unverified, so that exit check is still open.
 
 **Work**
 
@@ -33,7 +35,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Goal:** Implement financial rules without infrastructure dependencies.
 
-**Delivery status:** Recovered selectively from the local stash and checked against the synchronized Stage 0 foundation. After conformance fixes, 67 domain tests plus five foundation tests pass, along with lint, type-check, build, and formatting. Factories reject invalid openings and blank references; transitions prohibit failure codes on non-failure states. `Money` uses exact `bigint` minor units with decimal-string input/output. Ledger reconstruction includes `OPENING` exactly once. Persistent, atomic reversal uniqueness remains Stage 2 work.
+**Delivery status:** Recovered selectively from the local stash and checked against the synchronized Stage 0 foundation. After conformance fixes, 67 domain tests plus five foundation tests pass, along with lint, type-check, build, and formatting. Factories reject invalid openings and blank references; transitions prohibit failure codes on non-failure states. `Money` uses exact `bigint` minor units with decimal-string input/output. Ledger reconstruction includes `OPENING` exactly once. Stage 2 supplies a unique processed-reversal reference constraint; the durable check/application protocol remains Stage 3 work.
 
 **Work**
 
@@ -54,7 +56,9 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Depends on:** Stage 1.
 
-**Delivery status:** Implemented and verified: 20 real PostgreSQL integration tests plus the existing 72 tests pass (92 total, 268 assertions), as do lint, type-check, build, and formatting. The five-table schema uses exact string-mapped `NUMERIC(38,2)`, identity/reversal constraints, cross-wallet/currency foreign keys, and ledger mutation triggers. Wallet creation atomically records positive `OPENING`; zero opening has no transaction or entry. Wallet HTTP queries, wallet-scoped cursor pagination, and non-mutating reconciliation are wired. Empty-schema up/down/up and populated rollback refusal pass. Migrations never run automatically at startup.
+**Delivery status:** Delivered with both audit corrections verified: 31 real PostgreSQL integration tests plus the existing 72 tests pass (103 total, 309 assertions), as do lint, type-check, build, and formatting. The five-table schema uses exact string-mapped `NUMERIC(38,2)`, identity/reversal constraints, cross-wallet/currency foreign keys, and ledger mutation triggers. Wallet creation atomically records positive `OPENING`; zero opening has no transaction or entry. Wallet HTTP queries, wallet-scoped cursor pagination, and non-mutating reconciliation are wired. Empty-schema up/down/up and populated initial-schema rollback refusal pass. Migrations never run automatically at startup.
+
+**Revalidation gate (2026-10-29):** Closed for the two reported gaps. `RejectNonFiniteMoney` adds finite-value constraints without editing the applied initial migration; tests cover SQL `NaN`/infinities, populated corrective down/up and explicit refusal of corrupt legacy data without rewriting it. The globally registered HTTP filter now handles malformed JSON with the stable sanitized envelope, tested via real HTTP requests. The correction was applied to the local database and repeated `up` was a no-op. Stage 3 has not started.
 
 **Boundary:** Stage 2 provides the schema and wallet lifecycle, not the shared transactional wagering use case. Wager locks/retries, replay semantics, the concurrent-bet scenario, and three-process verification belong to Stage 3. Inbox/Outbox processing belongs to Stage 4. A single-transaction five-table rollback test verifies infrastructure only. HTTP reconciliation discrepancies currently use structured logging and a process-local counter; metrics export remains Stage 5.
 
@@ -83,6 +87,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 - Implement canonical payload hashing and persistent identity/idempotency handling.
 - Implement the shared `ProcessWager` application use case and database transaction/locking policy.
 - Add wager submission and transaction query endpoints with stable response/error mapping.
+- Document those contracts in OpenAPI and retain an explicit provider-identity integration point without claiming authentication is implemented.
 - Add tests for replay snapshots, payload conflicts, reversal uniqueness, and concurrent wallet updates.
 - Use agents on separate implementation/test surfaces after fixing API and persistence contracts; have the reliability reviewer inspect concurrency and idempotency changes read-only.
 

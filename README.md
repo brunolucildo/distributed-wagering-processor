@@ -2,14 +2,14 @@
 
 A modular financial backend designed to preserve wallet and ledger correctness under duplicate requests, out-of-order delivery, concurrency, and retries.
 
-> **Project status: Stage 2 implemented and validated.** The checkout contains the foundation, pure financial domain, PostgreSQL schema, atomic wallet creation, wallet/ledger queries, and read-only reconciliation. Transactional wagering processing, persistent replay handling, and messaging workers remain future work.
+> **Project status: Stage 2 delivered; both audit gaps corrected and tested.** The checkout contains the foundation, pure financial domain, PostgreSQL schema, atomic wallet creation, wallet/ledger queries, and read-only reconciliation. Stage 3 has not started.
 
 ## Technology
 
 | Area | Choice |
 |---|---|
 | Runtime and package manager | Bun 1.x |
-| Language | Strict TypeScript |
+| Language | Strict TypeScript; Node16 module/resolution mode (current output remains CommonJS) |
 | HTTP framework | NestJS |
 | Database | PostgreSQL |
 | ORM and migrations | MikroORM |
@@ -40,13 +40,13 @@ The four wallet routes and liveness are implemented. Wagering routes and readine
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| POST | `/wallets` | Create wallet and opening records |
-| GET | `/wallets/:walletId` | Read balance and version |
-| GET | `/wallets/:walletId/ledger` | Stable cursor pagination |
-| GET | `/wagering/transactions/:transactionId` | Read by internal identity |
-| GET | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Read by provider identity |
-| POST | `/wagering/transactions` | Submit with `Idempotency-Key` |
-| POST | `/wallets/:walletId/reconciliation` | Compare materialized and ledger balances |
+| POST | `/wallets` | Implemented: create wallet and opening records |
+| GET | `/wallets/:walletId` | Implemented: read balance and version |
+| GET | `/wallets/:walletId/ledger` | Implemented: stable cursor pagination |
+| GET | `/wagering/transactions/:transactionId` | Planned: read by internal identity |
+| GET | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Planned: read by provider identity |
+| POST | `/wagering/transactions` | Planned: submit with `Idempotency-Key` |
+| POST | `/wallets/:walletId/reconciliation` | Implemented: compare materialized and ledger balances |
 | GET | `/health/live` | Implemented process liveness |
 | GET | `/health/ready` | Planned dependency readiness |
 
@@ -91,9 +91,11 @@ Liveness returns `{"status":"ok"}` without checking dependencies. Wagering endpo
 
 ### Database and wallet lifecycle
 
-Run `bun run db:migrate` explicitly before starting the API. Startup connects to PostgreSQL but never changes the schema automatically. `bun run db:rollback` reverts the latest migration only when all five application tables are empty; it deliberately refuses to discard financial or reliability data. The same runner is available after build as `bun run dist/database/migrate.js up` (or `down`).
+Run `bun run db:migrate` explicitly before starting the API. Startup connects to PostgreSQL but never changes the schema automatically. `bun run db:rollback` reverts the latest migration: the initial schema can only be removed when all five application tables are empty, while the corrective finite-money migration removes only its constraints and preserves rows. Rolling back that correction removes its protection, so reapply it before resuming application writes. The same runner is available after build as `bun run dist\database\migrate.js up` (or `down`).
 
-Persisted monetary amounts use `NUMERIC(38,2)`, support at most 36 integer digits, and remain decimal strings through MikroORM. The domain can calculate larger values, but persistence rejects overflow and excess scale without rounding. Wallet creation requires `playerId`, `currency` (uppercase ISO code), and `openingBalance` (decimal string).
+Persisted monetary amounts use `NUMERIC(38,2)`, support at most 36 integer digits, and remain decimal strings through MikroORM. The domain can calculate larger values, but API/ORM inputs reject overflow and excess scale without rounding. Arbitrary SQL still uses PostgreSQL's native scale rounding on assignment; non-finite values are blocked at the database boundary. Wallet creation requires `playerId`, `currency` (uppercase ISO code), and `openingBalance` (decimal string); successful creation returns `201` with `{ id, playerId, currency, balance, version }`.
+
+The new `RejectNonFiniteMoney` migration validates existing monetary values as well as future writes. If legacy `NaN` data exists, migration fails explicitly without rewriting balances or the immutable ledger; investigate and use a reviewed financial recovery procedure rather than silently deleting or editing audit records.
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://localhost:3000/wallets -ContentType application/json -Body '{"playerId":"player-1","currency":"BRL","openingBalance":"100.00"}'
@@ -109,7 +111,7 @@ Use the returned wallet ID with `GET /wallets/:walletId`, `GET /wallets/:walletI
 |---|---|
 | 0: Foundation | Implemented; visual VS Code agent selection remains unverified |
 | 1: Domain | Recovered from local stash and validated |
-| 2: Persistence | Implemented and verified against real PostgreSQL |
+| 2: Persistence | Delivered; finite-value and error-envelope corrections verified |
 | 3: API and idempotency | Not started |
 | 4: Messaging and recovery | Not started |
 | 5: Operations and handoff | Not started |
@@ -122,7 +124,22 @@ Stage 2 verification passed **92 tests across five files (268 assertions)**, inc
 
 Both `bun run db:migrate` and the compiled migration runner were exercised; repeating `up` was a no-op. The compiled API connected to PostgreSQL, answered liveness, and returned the expected `404` on a missing-wallet query. The temporary smoke-test API was stopped afterward. PostgreSQL and LocalStack remain running. Wager-processing locks, retries, replay snapshots, and multi-process financial concurrency are Stage 3 work; Inbox/Outbox workers remain Stage 4 work.
 
-Git attributes now enforce LF for text files, including the Linux queue initialization script and Prettier-managed source files. After normalization and a LocalStack restart, `/_localstack/init/ready` reported the script `SUCCESSFUL`, all three expected queues were listed, and both Compose services were healthy. Earlier PostgreSQL connectivity and HTTP liveness checks were not repeated in this conformance pass.
+### Conformance revalidation — 2026-10-29
+
+The existing **92 tests / 268 assertions** and lint, type-check, build, format and Compose configuration checks pass after switching TypeScript to `module: Node16` / `moduleResolution: Node16`. Without `"type": "module"` in the package, this preserves CommonJS output and the Bun runtime; the verified local compiler is TypeScript 5.9.3, not certification of TypeScript 6/7.
+
+Additional probes used isolated temporary databases, not development data. They identified two gaps in the earlier implementation, now corrected with regression coverage:
+
+1. **Database money defense:** the new `RejectNonFiniteMoney` migration blocks non-finite wallet balances, wager amounts and ledger monetary columns without modifying the applied initial migration. Tests cover SQL `NaN`/infinities, populated down/up preservation, and refusal to migrate invalid legacy data without rewriting it.
+2. **HTTP error contract:** the existing exception filter is registered globally with `APP_FILTER`. Malformed JSON now returns `400` with exactly `{ "code": "INVALID_REQUEST", "message": "Invalid request." }`, without echoing the submitted payload.
+
+A real refused PostgreSQL connection was also checked through the wallet repository/filter and returned a sanitized `503` as intended. LocalStack still reports successful initialization and all three FIFO queues, including 60-second visibility and five-receive redrive on the source queue.
+
+The correction suite passes **103 tests / 309 assertions**, including **31 real PostgreSQL integration tests**, plus lint, type-check, build and formatting. The corrective migration was applied to the local development database and repeating `up` was a no-op. Both audit gaps are closed; Stage 3 remains unstarted.
+
+Authentication and its explicit identity-extension point, OpenAPI, readiness, exported metrics, full structured logging, application containers, and end-to-end multi-process/messaging verification remain outstanding delivery work; they are not current guarantees. No clean dependency reinstall or visual VS Code agent-picker check was performed during this correction.
+
+Git attributes enforce LF for text files, including the Linux queue initialization script and Prettier-managed source files. During the earlier Stage 1 correction pass, normalization and a LocalStack restart produced `SUCCESSFUL` initialization, all three queues and healthy Compose services. That earlier pass did not repeat PostgreSQL connectivity or HTTP liveness; compiled API/database checks were subsequently exercised in Stage 2 and this revalidation.
 
 Workspace agents are in `.github/agents/`: Domain Engineer, Test Engineer, and Reliability Reviewer. Their files and invocations were previously checked, but selection in the VS Code Chat picker requires a visual check with the Copilot harness selected. Agents are development tools, not runtime dependencies.
 
