@@ -18,6 +18,7 @@ import {
   WagerNotFoundError,
   WagerPersistenceUnavailableError,
 } from "../../../wagering/application/wager-errors";
+import { currentCorrelationId } from "../../../../observability/correlation-context";
 
 @Catch()
 export class WalletHttpExceptionFilter implements ExceptionFilter {
@@ -74,6 +75,7 @@ export class WalletHttpExceptionFilter implements ExceptionFilter {
       this.logger.error(
         JSON.stringify({
           event: "wallet_request_failed",
+          correlationId: currentCorrelationId(),
           errorType: error instanceof Error ? error.name : "UnknownError",
           ...(error instanceof DriverException
             ? {

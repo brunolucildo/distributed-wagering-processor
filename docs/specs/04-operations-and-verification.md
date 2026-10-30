@@ -1,6 +1,6 @@
 # 04 — Operations and Verification
 
-**Status:** API/worker roles, readiness, Stage 4 messaging/recovery, and a three-process API/consumer/publisher workflow are implemented and covered by PostgreSQL/LocalStack tests. The shutdown-timeout fault-injection test is skipped on Windows and needs POSIX CI. Exported metrics, authenticated provider identity (or a code-level identity extension point), and cross-process wager/idempotency race tests remain open.
+**Status:** API/worker roles, readiness, Stage 4 messaging/recovery, Prometheus metrics, a provider-identity extension point, cross-process wager/idempotency races, POSIX shutdown-timeout fault injection, and correlation propagation are implemented. The read-only reliability review is complete and its findings were corrected. Authentication is intentionally not enabled. The visual VS Code agent-picker confirmation from Stage 0 remains unverified.
 
 ## 1. Runtime processes
 
@@ -31,10 +31,12 @@ Defaults must be safe for local development and must not silently mask missing r
 
 - `GET /health/live` reports process liveness without dependency checks.
 - `GET /health/ready` checks PostgreSQL and all three configured SQS queues (`wager`, `DLQ`, and integration events), returning `503` if any dependency check fails.
-- Worker and recovery paths emit structured JSON event logs with identifiers where available; correlation identifiers are not consistently propagated across all surfaces.
-- Reconciliation discrepancies are logged and counted in a process-local counter. There is no exported metrics endpoint yet.
-- Required exported metrics remain outstanding: transaction outcomes, replays/conflicts, consumer retries/DLQ, lock/deadlock retries, processing latency, outbox pending count/oldest age, and reconciliation mismatches.
+- `GET /metrics` returns Prometheus text exposition for the current process. Scrape every API/worker instance; counters are not shared across processes.
+- HTTP requests accept an optional UUID `X-Correlation-Id`; absent or invalid values are replaced with a generated UUID and returned in the response header. SQS wager envelopes accept optional `correlationId`, generating one when absent. IDs flow to Outbox events, pending-reference retries, structured logs, and DLQ message attributes.
+- Metrics include transaction outcomes, replays/conflicts, Inbox duplicates, consumer/database/Outbox retries, app-routed dead letters and approximate SQS DLQ depth, PostgreSQL lock conflicts, processing latency, outbox pending count/oldest age, and reconciliation mismatches.
+- Scrapes refresh the Outbox and SQS gauges from their dependencies; a failed database or SQS query returns an error instead of presenting a success-shaped stale response.
 - Reconciliation must report, log, and metric discrepancies; never silently alter balances or ledger entries.
+- Provider wager routes use `ProviderIdentityPort`; the default adapter is explicitly unauthenticated. A production IdP integration remains out of scope.
 
 ## 4. Test layers
 
@@ -61,25 +63,26 @@ Required end-to-end scenarios:
 9. Temporary PostgreSQL/SQS unavailability produces safe retry and recovery.
 10. Every scenario verifies wallet balance against a ledger reconstruction.
 
-Evidence currently covers the same-request and competing-bet HTTP races within one Nest process, plus independent API/consumer/publisher roles and two concurrent publisher processes. A race of duplicate/conflicting financial requests across distinct API/consumer processes is not yet demonstrated.
+Evidence covers same-request and competing-bet HTTP races within one Nest process, plus duplicate-idempotency and competing hot-wallet requests across two independent API processes. Three independent API/consumer/publisher roles and two concurrent publisher processes are also verified.
 
 Tests that mock PostgreSQL/SQS may supplement, but must not replace, the integration and concurrency tests above.
 
 ## 5. Delivery and completion checks
 
 - `bun run test:unit` runs the unit/foundation tests without external infrastructure. `bun run test:integration` runs PostgreSQL integration tests, including the HTTP wagering concurrency cases; `bun test` discovers all suites and requires PostgreSQL.
-- Docker Compose starts the required local dependencies and application roles from a clean checkout.
+- Docker Compose starts PostgreSQL and LocalStack; start application roles separately with the documented Bun entrypoint.
+- Ubuntu CI runs lint, formatting, type-check, build, and the full PostgreSQL/LocalStack test suite, including POSIX-only shutdown fault injection.
 - Database migrations apply cleanly to an empty database and pass down/up validation.
 - `README.md` documents prerequisites, environment setup, Compose, queues, migrations, process startup, HTTP examples, and test commands.
 - `ARCHITECTURE.md` matches implemented behavior and records deviations/trade-offs.
 - No monetary calculation uses `number`; no ledger mutation path exists; no event is published before its originating commit.
 
-## 6. Current verification boundary (2026-10-29)
+## 6. Current verification boundary (2026-10-30)
 
-The current full suite ran **136 tests / 461 assertions**: 135 passed and the POSIX-only shutdown-timeout test was skipped on Windows. The 14 Stage 4 PostgreSQL/LocalStack integration cases cover separate API/consumer/publisher processes, two publishers claiming disjoint batches, Inbox commit-before-ACK and Outbox publish-before-confirm crash/restart recovery, and five-receive source-to-DLQ redrive, in addition to the earlier readiness, inbox, retry, and pending-reference cases. Lint, type-check, build, and format checks pass with Node16 module resolution.
+The full suite ran **144 tests / 516 assertions** in a Linux Bun 1.4.4 container: all passed, including the POSIX shutdown-timeout fault-injection test. Lint, source/test and documentation formatting, type-check, and build also passed. Ubuntu CI is configured to repeat the complete gates.
 
-The integration harness provisions uniquely named temporary databases and queues; it does not reset the configured development database. The shutdown-timeout test injects a blocked database transaction and checks process exit/rollback, but requires POSIX SIGTERM semantics and was not executed on Windows. The Stage 3 HTTP race tests still use one Nest process; multi-process financial race behavior remains unverified even though the three-role workflow is verified.
+The integration harness provisions uniquely named temporary databases and queues; it does not reset the configured development database. The shutdown-timeout test injects a blocked database transaction and verifies process exit/rollback under POSIX SIGTERM. A separate two-API-process test races duplicate idempotency and competing hot-wallet requests and reconstructs the final ledger balance.
 
-Readiness is implemented for PostgreSQL and configured SQS queues. Reconciliation discrepancy monitoring is a structured log plus process-local counter, not an exported metric. The project does not yet expose the required metrics endpoint, nor does it wire an authenticated provider identity or a code-level identity extension point. The database finite-value checks and malformed-JSON error-envelope corrections remain covered by regression tests.
+Readiness is implemented for PostgreSQL and configured SQS queues. `/metrics` exports the specified counters and gauges per process, including Outbox lag and approximate SQS DLQ depth. Provider wager routes have an explicit identity port, but its default adapter does not authenticate. Integration tests verify custom and generated correlation IDs across HTTP and SQS, Outbox records, and pending-reference recovery.
 
-Docker Compose starts PostgreSQL and LocalStack, not application roles. Run the API/workers with the documented Bun entrypoint and unique `WORKER_HEALTH_PORT` values. Keep the challenge-level gaps above visible until tests or code close them.
+Docker Compose starts PostgreSQL and LocalStack, not application roles. Run the API/workers with the documented Bun entrypoint and unique `WORKER_HEALTH_PORT` values. Stage 5 is complete; authentication remains an accepted documented non-goal, and the Stage 0 visual VS Code agent-picker check is still unverified.

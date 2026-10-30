@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — Distributed Wagering Processor
 
-> **Status:** Stages 0–4 implementados; três processos independentes, dois publishers, crash/restart e redrive foram validados com PostgreSQL e LocalStack. O fault injection de timeout de shutdown ainda precisa ser executado em POSIX; o teste é ignorado no Windows.
+> **Status:** Stage 5 concluído: métricas Prometheus, extensão de identidade, corridas financeiras entre processos, shutdown timeout POSIX, correlação uniforme e handoff estão implementados/testados. A confirmação visual da seleção de agentes no VS Code (Stage 0) permanece sem verificação.
 > **Objetivo:** documentar as decisões, invariantes e trade-offs da implementação.  
 > **Escopo:** este documento descreve o desenho pretendido; decisões ainda não implementadas devem ser tratadas como plano, não como garantias já comprovadas.
 
@@ -10,15 +10,15 @@
 - **Stage 1:** domínio puro, dinheiro exato em `bigint`, factories/rehydration, estados, operações, referências e reversões. `ProcessWager` é um serviço puro.
 - **Stage 2:** cinco tabelas, mappings MikroORM, migrations explícitas, abertura atômica de wallet, consultas, ledger append-only, cursor e reconciliação sem reparo. O teste de rollback nas cinco tabelas valida a infraestrutura, não um pipeline SQS.
 - **Stage 3:** API HTTP de apostas, hash canônico, locks advisory ordenados para identidade/idempotência, lock de wallet, retries limitados, replay de snapshot e persistência atômica de transaction/wallet/ledger/Outbox.
-- **Stage 4:** consumidor SQS com Inbox transacional, publisher Outbox com lease/retry/replay, reprocessador de referências com lease/expiração, endpoint de readiness e bootstrap por função foram implementados. Testes PostgreSQL/LocalStack cobrem três processos independentes, dois publishers com claims disjuntos, crash/restart nos limites de ACK/publicação, redrive à DLQ e recuperação/expiração. Timeout de shutdown permanece sem validação neste ambiente Windows.
-- **Stage 5:** métricas exportadas, hardening operacional, revisão final e handoff continuam planejados.
+- **Stage 4:** consumidor SQS com Inbox transacional, publisher Outbox com lease/retry/replay, reprocessador de referências com lease/expiração, endpoint de readiness e bootstrap por função foram implementados. Testes PostgreSQL/LocalStack cobrem três processos independentes, dois publishers com claims disjuntos, crash/restart nos limites de ACK/publicação, redrive à DLQ e recuperação/expiração. O timeout de shutdown foi validado em POSIX.
+- **Stage 5 (concluído):** endpoint Prometheus por processo, métricas financeiras/operacionais, `ProviderIdentityPort` com adapter não autenticador por padrão, corridas entre dois processos API, CI Ubuntu e correlação de HTTP/SQS/Outbox/recovery estão implementados. A revisão de confiabilidade foi concluída e seus dois achados de baixa severidade foram corrigidos/verificados. Autenticação real continua fora do escopo. A confirmação visual da seleção de agentes no VS Code permanece pendente.
 
 A auditoria Stage 2 encontrou duas lacunas, ambas corrigidas. Após o Stage 3, a suíte passa em 119 testes / 404 assertions (47 testes de integração PostgreSQL / 229 assertions), além de lint, type-check, build e formatação:
 
 1. A nova migration `RejectNonFiniteMoney` rejeita `NaN` e infinitos explicitamente nas cinco colunas monetárias de wallet, transação e ledger. A migration inicial permanece intacta. Dados legados inválidos causam falha explícita na aplicação da migration, sem reparo silencioso. O `down` da correção remove apenas suas constraints e preserva os dados.
 2. O filtro existente de erros HTTP está registrado globalmente via `APP_FILTER`, não apenas no controller. JSON malformado retorna `400` com `{ code: "INVALID_REQUEST", message: "Invalid request." }`, sem expor o corpo recebido. Testes reais cobrem essa borda.
 
-Os critérios single-process do Stage 3 e os fluxos Stage 4 descritos estão cobertos por testes. O processamento foi exercitado com SQS LocalStack e PostgreSQL reais; três processos e encerramento forçado nos limites de commit/ACK e publish/confirm foram demonstrados. O teste de timeout de shutdown com SIGTERM e transação bloqueada está implementado, mas não foi executado no Windows, onde o sinal enviado ao subprocesso não é catchable como no POSIX.
+Os critérios single-process do Stage 3 e os fluxos Stage 4/5 descritos estão cobertos por testes. O processamento foi exercitado com SQS LocalStack e PostgreSQL reais; três processos, corridas financeiras entre processos e encerramento forçado nos limites de commit/ACK, publish/confirm e timeout foram demonstrados em Linux Bun 1.4.4. O teste de timeout usa SIGTERM e é ignorado no Windows; o workflow Ubuntu executa esse caso.
 
 ## 1. Contexto e objetivos
 
@@ -128,8 +128,8 @@ O diagrama representa responsabilidades lógicas. A API, o consumidor SQS, o pub
 | Validação HTTP            | Zod                                            | Schemas estritos já usados em configuração e contratos de wallet; evita uma segunda stack de validação.                           |
 | Testes                    | `bun test`                                     | Runner compatível com o runtime escolhido.                                                                                        |
 | Logs                      | NestJS Logger                                  | Eventos JSON em alguns fluxos; propagação uniforme de correlação ainda incompleta.                                                |
-| Métricas                  | Não implementadas                              | O monitor de reconciliação mantém somente contador em memória; não há endpoint/exportador.                                        |
-| Autenticação              | Não implementada                               | Usar Identity Provider externo; ainda falta um port/guard de extensão no código.                                                  |
+| Métricas                  | `@prometheus-io/client`                        | `/metrics` exporta counters e gauges process-local; scraping deve cobrir cada instância.                                          |
+| Autenticação              | Não habilitada                                 | Rotas de provider usam `ProviderIdentityPort`; o adapter padrão não autentica.                                                    |
 | Ambiente local            | Docker Compose + Bun                           | Compose sobe PostgreSQL e LocalStack; API e workers são iniciados separadamente pelo mesmo entrypoint Bun.                        |
 
 ### 3.1 Restrições tecnológicas
@@ -514,7 +514,7 @@ Health checks não exigem autenticação. A reconciliação não corrige diverg�
 
 A paginação será baseada em cursor estável e opaco, ordenado por uma combinação única e determinística, como `createdAt` e `id`. Não dependerá de offset para percorrer um ledger que pode crescer continuamente.
 
-No Stage 2, a ordem implementada é crescente por `(created_at, id)`, com `timestamptz(3)` para preservar o cursor em `Date`. O cursor é base64url com versão e wallet, não um token de autorização; o limite padrão é 50 e valores maiores são limitados a 100. O contrato de criação é `{ playerId, currency, openingBalance }`, com UUID gerado internamente e resposta `201`. Wallet routes, wagering submit/read routes e `/health/live` estão disponíveis. O Stage 4 adicionou `/health/ready`, que verifica PostgreSQL e as filas SQS configuradas. O contrato HTTP atual está em `docs/api/openapi.yaml`.
+No Stage 2, a ordem implementada é crescente por `(created_at, id)`, com `timestamptz(3)` para preservar o cursor em `Date`. O cursor é base64url com versão e wallet, não um token de autorização; o limite padrão é 50 e valores maiores são limitados a 100. O contrato de criação é `{ playerId, currency, openingBalance }`, com UUID gerado internamente e resposta `201`. Wallet routes, wagering submit/read routes, `/health/live`, `/health/ready` e `/metrics` estão disponíveis. Readiness verifica PostgreSQL e as filas SQS configuradas; métricas exportam valores de cada processo. O contrato HTTP atual está em `docs/api/openapi.yaml`.
 
 ## 14. Autenticação e segurança
 
@@ -528,7 +528,7 @@ Se a autenticação não for implementada no timebox:
 - manter health checks abertos conforme o contrato;
 - tratar a identidade do provider presente nas mensagens como dado sujeito a validação de domínio.
 
-No estado atual, `providerId` é validado como campo de negócio, mas ainda não existe guard/port que o vincule a uma identidade autenticada. A API não deve ser apresentada como autenticada.
+As rotas de submit e leitura por identidade externa chamam `ProviderIdentityPort` e comparam o provider autenticado com o `providerId` solicitado. `UnconfiguredProviderIdentityAdapter` é o padrão intencional e retorna identidade ausente; portanto `providerId` continua sendo um campo de negócio e a API não deve ser apresentada como autenticada. Uma integração OIDC externa pode substituir o adapter sem alterar os controllers.
 
 Outras práticas:
 
@@ -553,23 +553,19 @@ Os logs devem ser JSON e incluir, quando disponíveis:
 
 Não incluir dados sensíveis nem payloads financeiros completos. Os logs devem permitir seguir uma operação entre API, worker, banco e publicação de eventos.
 
+O middleware HTTP valida `X-Correlation-Id` como UUID; para um valor ausente ou inválido, gera um UUID e o devolve no response header. O consumidor SQS aceita `correlationId` opcional no envelope e gera um UUID quando ausente. O ID segue para os eventos Outbox, logs de processamento e retries de pending-reference; a rota para DLQ também o propaga como atributo da mensagem.
+
 ### 15.2 Métricas mínimas
 
-- transações por status e tipo;
-- duplicatas/replays detectados;
-- conflitos de idempotência;
-- retries;
-- mensagens em DLQ;
-- duração/latência do processamento;
-- conflitos de locking e retries por concorrência;
-- quantidade de mensagens pendentes na outbox;
-- atraso da outbox;
-- divergências de reconciliação.
+O endpoint `GET /metrics` usa o formato Prometheus e está disponível em API e worker roles. Cada processo mantém seu próprio registry; o scraper deve descobrir e coletar todas as instâncias.
+
+Métricas entregues: `wager_transactions_total` por status, `wager_replays_total`, `inbox_duplicate_deliveries_total`, `wager_idempotency_conflicts_total`, `processing_retries_total` por origem, `messages_dead_lettered_total`, `sqs_dead_letter_queue_messages` (profundidade aproximada visível + in-flight), `database_lock_conflicts_total`, `wager_processing_duration_seconds`, `outbox_pending_messages`, `outbox_oldest_pending_age_seconds` e `wallet_reconciliation_discrepancies_total`. Counters permanecem locais ao processo; gauges de Outbox e DLQ são atualizados durante o scrape e dependem de PostgreSQL/SQS.
 
 ### 15.3 Health checks
 
 - `live`: confirma que o processo está vivo.
 - `ready`: verifica PostgreSQL e as três filas SQS configuradas. API e workers isolados expõem somente as rotas de health necessárias ao seu perfil.
+- `metrics`: exporta métricas operacionais Prometheus do processo.
 
 A indisponibilidade de uma dependência deve afetar readiness quando ela impede o processo de cumprir sua função. Health endpoints permanecem sem autenticação.
 

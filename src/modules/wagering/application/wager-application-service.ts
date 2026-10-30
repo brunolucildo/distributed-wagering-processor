@@ -27,6 +27,11 @@ import {
   WagerIntegrationEvent,
 } from "../../messaging/contracts/integration-events";
 import { ProcessWager } from "../domain/services/process-wager";
+import { MetricsService } from "../../metrics/metrics.service";
+import {
+  currentCorrelationId,
+  runWithCorrelation,
+} from "../../../observability/correlation-context";
 import {
   ExternalWagerKind,
   WagerStatus,
@@ -166,12 +171,56 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class WagerApplicationService {
   private readonly logger = new Logger(WagerApplicationService.name);
 
-  constructor(private readonly orm: MikroORM) {}
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly metrics = new MetricsService(),
+  ) {}
 
   async submit(
     input: SubmitWagerInput,
     idempotencyKey: string | undefined,
     transactionManager?: SqlEntityManager,
+    suppliedCorrelationId?: string,
+  ): Promise<WagerSubmissionResult> {
+    const correlationId =
+      suppliedCorrelationId ?? currentCorrelationId() ?? randomUUID();
+    const startedAt = performance.now();
+    try {
+      const result = await runWithCorrelation(correlationId, () =>
+        this.submitTransaction(
+          input,
+          idempotencyKey,
+          transactionManager,
+          correlationId,
+        ),
+      );
+      if (!transactionManager) {
+        this.metrics.recordWagerOutcome(
+          result.body.status,
+          result.body.idempotentReplay,
+        );
+      }
+      return result;
+    } catch (error) {
+      if (!transactionManager && error instanceof WagerConflictError) {
+        this.metrics.recordIdempotencyConflict();
+      }
+      throw error;
+    } finally {
+      if (!transactionManager) {
+        this.metrics.observeWagerDuration(
+          (performance.now() - startedAt) / 1_000,
+          "http",
+        );
+      }
+    }
+  }
+
+  private async submitTransaction(
+    input: SubmitWagerInput,
+    idempotencyKey: string | undefined,
+    transactionManager?: SqlEntityManager,
+    correlationId = currentCorrelationId() ?? randomUUID(),
   ): Promise<WagerSubmissionResult> {
     const request = this.normalize(input, idempotencyKey);
     const process = async (em: SqlEntityManager) => {
@@ -347,6 +396,7 @@ export class WagerApplicationService {
         result.wallet ?? wallet,
         result.ledgerEntry,
         savedAt,
+        correlationId,
       );
       for (const event of events) {
         em.persist(
@@ -377,10 +427,24 @@ export class WagerApplicationService {
           if (winner) return this.replayOrConflict(winner, request);
         }
         if (!isRetryableDatabaseError(error)) throw error;
+        this.metrics.recordRetry("database");
+        if (error instanceof DriverException) {
+          const sqlState = error.sqlState ?? error.code ?? "";
+          if (sqlState === "40001") {
+            this.metrics.recordLockConflict("serialization");
+          } else if (sqlState === "40P01") {
+            this.metrics.recordLockConflict("deadlock");
+          } else if (sqlState === "55P03") {
+            this.metrics.recordLockConflict("lock_unavailable");
+          }
+        }
         if (attempt === 2) {
           this.logger.error(
             JSON.stringify({
               event: "wager_persistence_retry_exhausted",
+              correlationId: currentCorrelationId(),
+              providerId: request.providerId,
+              walletId: request.walletId,
               sqlState:
                 error instanceof DriverException
                   ? (error.sqlState ?? error.code ?? "unknown")
@@ -476,6 +540,18 @@ export class WagerApplicationService {
       const reference = referenceRow
         ? transactionFromRow(referenceRow)
         : undefined;
+      const initialEvents = await em.execute<
+        Array<{ correlation_id: string | null }>
+      >(
+        `select payload->>'correlationId' as correlation_id
+         from outbox_messages
+         where aggregate_id = ?
+           and event_type = 'WagerTransactionPendingReference'
+         order by created_at, event_id
+         limit 1`,
+        [transactionId],
+      );
+      const correlationId = initialEvents[0]?.correlation_id ?? randomUUID();
       const retryCount = row.retry_count + 1;
       const databaseTimes = await em.execute<
         Array<{ current_time: Date | string }>
@@ -589,6 +665,7 @@ export class WagerApplicationService {
           result.wallet,
           result.ledgerEntry,
           occurredAt,
+          correlationId,
         )) {
           em.persist(
             em.create(OutboxMessageRecord, {
@@ -738,11 +815,12 @@ export class WagerApplicationService {
     wallet: Wallet,
     ledgerEntry: WalletLedgerEntry | null,
     occurredAt: Date,
+    correlationId = currentCorrelationId() ?? randomUUID(),
   ): WagerIntegrationEvent[] {
     const eventBase = {
       version: 1 as const,
       aggregateId: transaction.id,
-      correlationId: randomUUID(),
+      correlationId,
       occurredAt: occurredAt.toISOString(),
     };
     if (

@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-**Status:** Stages 0–4 delivered. Worker flows, three independent application processes, two publisher processes, crash/restart windows, and SQS redrive are verified with PostgreSQL/LocalStack integration tests. Shutdown-timeout fault injection remains unverified on Windows because the test requires POSIX signal delivery. Stage 5 is not started. Stage 0's visual VS Code agent-picker check also remains unverified.
+**Status:** Stage 5 is complete. Prometheus metrics, a provider-identity extension point, cross-process financial-race tests, Ubuntu CI, POSIX shutdown-timeout verification, correlation propagation, and handoff are implemented. The read-only reliability review found two low-severity issues; both were fixed and independently rechecked. Stage 0's visual VS Code agent-picker check remains unverified.
 **Approach:** Complete each stage's exit criteria before starting dependent work. Keep each stage reviewable and update the specs/architecture when an implementation decision changes.
 
 Agent-assisted work follows [Agent-Assisted Development Workflow](./agent-assisted-development.md). Agents are introduced in Stage 0 and used selectively for independent, bounded work in later stages; the orchestrator remains responsible for integration and verification.
@@ -114,7 +114,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Verification (2026-10-29):** 136 tests / 461 assertions ran across seven files: 135 passed and the POSIX-only shutdown-timeout test was skipped on Windows. The 14 Stage 4 integration cases use PostgreSQL and LocalStack; 13 passed. They verify three independent API/consumer/publisher processes, two separate publisher processes claiming disjoint batches, process death after Inbox commit/before ACK and Outbox publish/before confirmation, restart recovery without duplicate financial effects, five-receive source-to-DLQ redrive, Inbox conflicts, readiness, replay/retry, and pending-reference recovery/expiry. Lint, type-check, build, and format checks pass.
 
-**Boundary:** The shutdown-timeout integration test injects a blocked database transaction and checks process termination/rollback, but it is skipped on Windows because child-process SIGTERM is not delivered as a catchable POSIX signal there. Run it on POSIX CI before claiming that shutdown-timeout fault injection is verified. Stage 0's visual VS Code agent-picker check also remains open.
+**Boundary:** The shutdown-timeout integration test injects a blocked database transaction and checks process termination/rollback. It is skipped on Windows because child-process SIGTERM is not delivered as a catchable POSIX signal there; the Stage 5 Linux Bun run now verifies it. Stage 0's visual VS Code agent-picker check remains open.
 
 **Work**
 
@@ -138,14 +138,18 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Depends on:** Stages 0–4.
 
+**Delivery status:** Complete. `/metrics` exports per-process Prometheus counters/gauges; `ProviderIdentityPort` is wired to provider routes with an explicitly unauthenticated default; two API processes are tested for duplicate idempotency and competing hot-wallet wagers; Ubuntu CI runs the full suite including the POSIX shutdown-timeout test. Optional/generated correlation IDs propagate from HTTP and SQS through Outbox, recovery, logs, and DLQ metadata. The read-only reliability review is complete; two low-severity findings were corrected and independently checked. Authentication remains an explicit non-goal.
+
+**Verification evidence (2026-10-30):** The full Linux Bun 1.4.4 suite passed 144 tests / 516 assertions, including the POSIX shutdown fault test and new HTTP/SQS correlation cases. Lint, source/test and documentation formatting, type-check, and build also pass. The reliability review and handoff are complete. Stage 0's visual VS Code agent-picker check remains unverified.
+
 **Work**
 
-- Complete exported operational metrics and a provider-identity extension point; authentication itself may remain out of scope if explicitly documented.
-- Run the cross-process same-wallet/idempotency race scenarios and the POSIX shutdown-timeout fault-injection test.
-- Retain the delivered structured logs, liveness/readiness, and error sanitization; add any gaps found during final review.
+- Record the completed reliability review and its two verified low-severity fixes in the handoff.
+- Preserve and test correlation-ID propagation across HTTP, SQS, Outbox, pending-reference recovery, logs, and DLQ attributes.
+- Retain the delivered metrics, provider-identity extension point, cross-process races, POSIX shutdown test, liveness/readiness, and error sanitization.
 - Run complete unit, integration, concurrency, migration, lint, and type-check suites.
 - Review every requirement in the challenge against implementation and tests.
-- Run a read-only reliability review of the integrated diff, triage its findings, and independently verify any fixes.
+- Read-only reliability review completed. Its findings and independently verified fixes are recorded in the agent-assisted development handoff.
 - Update root README and `ARCHITECTURE.md` to reflect actual commands, behavior, limitations, and any deviations from these specs.
 - Optionally run and document a load test; it is not a prerequisite for completion.
 
@@ -153,7 +157,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 - All mandatory challenge completion criteria are demonstrably met.
 - A clean environment can follow the README to run the application and tests.
-- The development handoff records agent roles used, bounded tasks, reviewed outputs, and actual validation evidence without overstating agent guarantees.
+- The development handoff records agent roles used, bounded tasks, reviewed outputs, and actual validation evidence without overstating agent guarantees; also record the still-unverified visual agent-picker check.
 - No unresolved high-risk behavior or undocumented deviations remain.
 
 ## Dependency overview

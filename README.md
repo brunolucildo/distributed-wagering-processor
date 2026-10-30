@@ -2,7 +2,7 @@
 
 A modular financial backend designed to preserve wallet and ledger correctness under duplicate requests, out-of-order delivery, concurrency, and retries.
 
-> **Project status: Stage 4 worker flows verified with PostgreSQL and LocalStack.** Tests cover three independent API/consumer/publisher processes, two publisher processes, crash/restart boundaries, and source-to-DLQ redrive. Shutdown-timeout fault injection remains to be run on POSIX.
+> **Project status: Stage 5 implementation complete.** Prometheus metrics, a provider-identity extension point, cross-process financial-race tests, POSIX shutdown-timeout verification, and correlation propagation across HTTP, SQS, Outbox, and recovery are implemented. The VS Code visual agent-picker confirmation from Stage 0 remains unverified.
 
 ## Technology
 
@@ -15,12 +15,13 @@ A modular financial backend designed to preserve wallet and ledger correctness u
 | ORM and migrations          | MikroORM                                                                                   |
 | Monetary arithmetic         | Exact `bigint` minor units behind `Money`, with decimal-string input/output                |
 | Messaging                   | AWS SQS API via LocalStack                                                                 |
+| Observability               | Prometheus text exposition per API/worker process                                          |
 | Local orchestration         | Docker Compose                                                                             |
 | Tests                       | `bun test`; real PostgreSQL integration tests, including wager concurrency and idempotency |
 
 ## Required financial and processing behavior
 
-These requirements guide the implementation. Domain rules, wallet persistence, HTTP and SQS wager processing, durable retries, recovery workers, and the three-process workflow are verified. Cross-process hot-wallet/idempotency races and POSIX shutdown-timeout fault injection remain open:
+These requirements guide the implementation. Domain rules, wallet persistence, HTTP and SQS wager processing, durable retries, recovery workers, and multi-process financial races are verified:
 
 - Monetary input/output uses decimal strings with exactly two fractional digits, never JavaScript `number` for monetary arithmetic.
 - The initial operational currency is BRL; cross-currency operations are rejected.
@@ -29,7 +30,7 @@ These requirements guide the implementation. Domain rules, wallet persistence, H
 - `BET` debits, `WIN` credits, and `LOSS` records an outcome without changing balance. `REFUND` and `ROLLBACK` reverse eligible references according to the domain specification.
 - Each balance change commits with its immutable ledger entry. Ledger update/delete is prohibited.
 - Stage 3 implements persistent idempotency and replay snapshots using PostgreSQL identity constraints and advisory locks.
-- Stage 3 combines ordered transaction-identity locks, a row-level wallet lock, and database constraints for concurrent wager requests. The HTTP race cases run in one API process; concurrent same-wallet/idempotency races across API and SQS worker processes remain unverified. Stage 4 separately verifies the three-role process workflow and its crash-recovery paths.
+- Stage 3 combines ordered transaction-identity locks, a row-level wallet lock, and database constraints for concurrent wager requests. Stage 5 verifies duplicate idempotency and competing same-wallet requests against two independently running API processes.
 - Stage 4 consumes FIFO wager messages through a transactional Inbox and acknowledges only after a durable result or DLQ delivery.
 - Stage 4 publishes committed Outbox events using recoverable leases, retries, and explicit replay of exhausted events.
 - Stage 4 reprocesses and expires missing references using durable scheduling and leases.
@@ -50,8 +51,9 @@ Wallet and wagering routes, liveness, and dependency readiness are implemented.
 | POST   | `/wallets/:walletId/reconciliation`                                   | Implemented: compare materialized and ledger balances                              |
 | GET    | `/health/live`                                                        | Implemented process liveness                                                       |
 | GET    | `/health/ready`                                                       | Implemented PostgreSQL and SQS dependency readiness                                |
+| GET    | `/metrics`                                                            | Implemented Prometheus text metrics for this process and dependency gauges         |
 
-Authentication is not a scored challenge requirement. If added, use an external identity provider rather than a custom password store. Health endpoints remain unauthenticated.
+Authentication is not a scored challenge requirement. `ProviderIdentityPort` is wired into provider wager routes, but the default adapter intentionally does not authenticate. Integrate an external identity provider before exposing those routes to untrusted providers; do not treat `providerId` as authenticated identity. Health and metrics endpoints remain unauthenticated.
 
 ## Local setup
 
@@ -77,6 +79,7 @@ LocalStack provisions `wager-transactions.fifo`, `wager-transactions-dlq.fifo`, 
 
 ```powershell
 curl.exe --fail http://localhost:3000/health/live
+curl.exe --fail http://localhost:3000/metrics
 docker compose ps
 docker compose logs localstack
 bun test
@@ -114,20 +117,20 @@ The new `RejectNonFiniteMoney` migration validates existing monetary values as w
 Invoke-RestMethod -Method Post -Uri http://localhost:3000/wallets -ContentType application/json -Body '{"playerId":"player-1","currency":"BRL","openingBalance":"100.00"}'
 ```
 
-Use the returned wallet ID with `GET /wallets/:walletId`, `GET /wallets/:walletId/ledger?limit=50&cursor=...`, and `POST /wallets/:walletId/reconciliation`. Ledger ordering is ascending `(created_at, id)`; cursors are opaque and wallet-scoped. The default page size is 50, capped at 100. Reconciliation returns `storedBalance`, `calculatedBalance`, `difference` (stored minus calculated), `consistent`, and `checkedEntries`, without repairing discrepancies. HTTP discrepancies are logged and counted in a process-local counter; metrics export remains Stage 5 work. Authentication remains unimplemented.
+Use the returned wallet ID with `GET /wallets/:walletId`, `GET /wallets/:walletId/ledger?limit=50&cursor=...`, and `POST /wallets/:walletId/reconciliation`. Ledger ordering is ascending `(created_at, id)`; cursors are opaque and wallet-scoped. The default page size is 50, capped at 100. Reconciliation returns `storedBalance`, `calculatedBalance`, `difference` (stored minus calculated), `consistent`, and `checkedEntries`, without repairing discrepancies. Reconciliation discrepancies and processing outcomes are exported as Prometheus metrics. Scrape `/metrics` on each API/worker process to collect its local counters; the endpoint refreshes the outbox backlog and SQS DLQ depth gauges. Authentication remains disabled; the default provider identity adapter is an explicit extension point, not security.
 
 `bun run test:unit` does not require Docker. `bun test` and `bun run test:integration` require PostgreSQL, LocalStack, and a database user with `CREATEDB` (the Compose development user supports this). Tests create a uniquely named `stage2_test_*` database and temporary FIFO queues, then drop only those resources afterward. They never reset the development database. Optionally set `TEST_DATABASE_URL` to a separate PostgreSQL test server; the configured database is used only as the administrative connection for creating the temporary database.
 
 ## Development progress
 
-| Stage                     | Status                                                                                  |
-| ------------------------- | --------------------------------------------------------------------------------------- |
-| 0: Foundation             | Implemented; visual VS Code agent selection remains unverified                          |
-| 1: Domain                 | Recovered from local stash and validated                                                |
-| 2: Persistence            | Delivered; finite-value and error-envelope corrections verified                         |
-| 3: API and idempotency    | Delivered and verified                                                                  |
-| 4: Messaging and recovery | Multi-process, crash/restart, and redrive verified; POSIX shutdown-timeout test remains |
-| 5: Operations and handoff | Not started                                                                             |
+| Stage                     | Status                                                                                              |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
+| 0: Foundation             | Implemented; visual VS Code agent selection remains unverified                                      |
+| 1: Domain                 | Recovered from local stash and validated                                                            |
+| 2: Persistence            | Delivered; finite-value and error-envelope corrections verified                                     |
+| 3: API and idempotency    | Delivered and verified                                                                              |
+| 4: Messaging and recovery | Multi-process, crash/restart, redrive, and POSIX shutdown-timeout verified                          |
+| 5: Operations and handoff | Implementation/tests in progress; reliability review complete; correlation and final handoff remain |
 
 Stage 1 recovery restored `Money`, immutable wallet and ledger entities, wager lifecycle and operation/reference/reversal rules, domain errors, integration event envelopes, and two domain test files. The recovery preserved the current Stage 0 foundation and both existing stashes.
 
@@ -168,7 +171,17 @@ Stage 4 verification ran **136 tests / 461 assertions across seven files**: 135 
 
 Boundary: the shutdown-timeout test holds a PostgreSQL transaction open and checks process termination/rollback, but was skipped on Windows because subprocess SIGTERM is not delivered as a catchable POSIX signal. Run it in POSIX CI before claiming that shutdown-timeout fault injection is verified. Authentication and exported metrics remain outside Stage 4.
 
-Authentication and an authenticated provider identity-extension point, exported metrics, and application containers remain outstanding delivery work; they are not current guarantees. No clean dependency reinstall or visual VS Code agent-picker check was performed during this correction.
+### Stage 5 implementation — 2026-10-30
+
+Added a Prometheus `/metrics` endpoint to API and worker roles. Per-process counters cover wager outcomes/replays/conflicts, Inbox duplicates, consumer/database/Outbox retries, application DLQ routing, PostgreSQL lock conflicts, wager latency, and reconciliation discrepancies. Scrapes refresh gauges for pending/leased Outbox count and oldest age plus the approximate configured SQS DLQ depth. Metrics are process-local; scrape every instance. The dependency is `@prometheus-io/client`.
+
+Provider wager submit/read routes now depend on an explicit `ProviderIdentityPort`; the default `UnconfiguredProviderIdentityAdapter` preserves the challenge's unauthenticated choice. If an adapter returns an authenticated provider, access to a different `providerId` is rejected. No authentication is enabled until a real external IdP adapter is configured.
+
+Integration coverage now starts two independent API processes and races both an identical idempotent request and two `80.00 BRL` bets against a `100.00 BRL` wallet. It asserts one effect for the duplicate, one accepted/one rejected competing bet, the `19.00 BRL` resulting balance, and exact ledger reconstruction. Added Ubuntu CI to run lint, formatting, type-check, build and the complete PostgreSQL/LocalStack test suite. The POSIX SIGTERM timeout/fault-injection test passed in a Linux Bun 1.4.4 container.
+
+Correlation IDs are accepted and validated from the optional `X-Correlation-Id` HTTP header; otherwise the API generates one and returns it on the response. SQS wager envelopes accept an optional UUID and generate one when absent. The same ID is retained on Outbox events and across pending-reference recovery, and is included in relevant structured logs and DLQ message attributes. Integration tests verify supplied and generated IDs end to end.
+
+The read-only Reliability Reviewer identified two low-severity issues in retry metrics and test port allocation. Retry metrics now increment only after a lease-owned update succeeds; the multi-process test allocates its second port after the first API is listening. Both fixes were independently rechecked. Final Linux validation evidence and the agent-role record are in the [roadmap](./docs/plans/implementation-roadmap.md) and [agent-assisted workflow](./docs/plans/agent-assisted-development.md). Stage 0's visual VS Code agent-picker check remains unverified; authentication remains intentionally disabled.
 
 Git attributes enforce LF for text files, including the Linux queue initialization script and Prettier-managed source files. During the earlier Stage 1 correction pass, normalization and a LocalStack restart produced `SUCCESSFUL` initialization, all three queues and healthy Compose services. That earlier pass did not repeat PostgreSQL connectivity or HTTP liveness; compiled API/database checks were subsequently exercised in Stage 2 and this revalidation.
 
@@ -198,7 +211,8 @@ The challenge brief is retained locally as `READMEChallenge.md` and excluded fro
 3. **Verified:** API, wager consumer, and Outbox publisher run as three independent processes against shared PostgreSQL/LocalStack dependencies; two publisher processes claim disjoint batches.
 4. **Verified:** process death after Inbox commit/before SQS acknowledgement followed by redelivery preserves one financial effect.
 5. **Verified:** process death after SQS accepts an Outbox event/before database confirmation is recovered after lease expiry; the event is safely republished and marked published. Five-receive redrive reaches the configured DLQ.
-6. **Pending POSIX CI:** shutdown timeout during an injected in-flight PostgreSQL transaction; this subprocess SIGTERM test is skipped on Windows.
+6. **Verified on POSIX:** shutdown timeout during an injected in-flight PostgreSQL transaction exits with code 1 and rolls back the transaction.
 7. **Verified for wallet lifecycle:** Wallet reconciliation compares balances with ledger reconstruction without repair.
+8. **Verified in Stage 5:** two independent API processes serialize duplicate idempotency and competing same-wallet wagers; the final balance equals the reconstructed ledger balance.
 
 Unit mocks do not replace PostgreSQL/SQS integration, concurrency, and failure tests. Update this README with actual commands, results, limitations, and next-stage status after every stage.

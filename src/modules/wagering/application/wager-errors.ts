@@ -1,3 +1,5 @@
+import type { WagerStatus } from "../domain/entities/wager-transaction";
+
 export class WagerConflictError extends Error {
   constructor() {
     super(
@@ -25,7 +27,7 @@ export class WagerPersistenceUnavailableError extends Error {
 
 export interface WagerSubmissionBody {
   transactionId: string;
-  status: string;
+  status: WagerStatus;
   failureCode?: string;
   walletBalance: string;
   idempotentReplay: boolean;

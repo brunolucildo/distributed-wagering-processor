@@ -1,6 +1,6 @@
 # 02 — API and Idempotency
 
-**Status:** Wallet and wagering routes, liveness/readiness, persistent idempotency, and the OpenAPI contract are delivered. Authentication and a code-level provider identity extension point are absent. The three-role process workflow is integration-tested, but concurrent wager/idempotency races across separate API processes are not.
+**Status:** Wallet and wagering routes, liveness/readiness, Prometheus metrics, persistent idempotency, the OpenAPI contract, and an injectable provider identity extension point are delivered. Authentication remains disabled by the explicit unconfigured adapter. Duplicate idempotency and competing same-wallet races are tested across two separate API processes.
 **Transport:** NestJS HTTP API. JSON monetary amounts are strings.
 
 ## 1. Endpoints
@@ -26,7 +26,7 @@
 - The read route returns the same wallet shape. Ledger entries contain `id`, `walletId`, `transactionId`, `amount`, `currency`, `direction`, `balanceBefore`, `balanceAfter`, and `createdAt`, together with `nextCursor` (nullable).
 - The reconciliation route returns `200` with `walletId`, `currency`, `storedBalance`, `calculatedBalance`, `difference` (stored minus calculated), `consistent`, and `checkedEntries`. It does not repair either data source.
 - Wallet IDs in paths must be UUIDs. Missing wallets return `404`. The existing wallet exception filter is registered globally via `APP_FILTER`, so pre-controller parser errors and controller errors use `{ code, message }`.
-- Authentication/authorization are not implemented; `providerId` is a validated business field, not authenticated identity, and no no-op guard claims to protect these routes. Add an authenticated provider identity integration before exposing the API beyond its intended environment.
+- Authentication/authorization are not enabled; `providerId` remains a business field, not authenticated identity. Provider wager routes call `ProviderIdentityPort`; the default `UnconfiguredProviderIdentityAdapter` returns no authenticated identity, and the API must not be presented as protected. Replace it with an external IdP adapter before exposing provider routes to untrusted callers.
 
 ## 2. Submission contract
 
@@ -67,7 +67,8 @@ The original response snapshot, including the balance at the original processing
 ## 5. Security and error representation
 
 - Health endpoints are unauthenticated as required by the challenge.
-- Authentication may remain unimplemented; document that choice and retain an explicit guard/identity extension point. Do not present a no-op guard as production security.
+- Authentication may remain unimplemented; `ProviderIdentityPort` is the explicit extension point and its default adapter does not authenticate. Do not present this as production security.
+- `/metrics` is unauthenticated and exports operational data only; scrape each process separately.
 - Use a consistent JSON error envelope containing a stable machine-readable code and human-readable message. Do not expose SQL, stack traces, credentials, or raw provider payloads.
 - `503` responses are retryable with the same idempotency key. A persisted `REJECTED` outcome is not retryable as a new transaction.
 
@@ -76,11 +77,17 @@ The original response snapshot, including the balance at the original processing
 - Contract tests cover every status mapping, invalid payloads, `OPENING` rejection, replay response snapshots, payload conflict, and concurrent duplicate submissions.
 - [OpenAPI documentation](../api/openapi.yaml) describes request/response shapes, money string format, error codes, idempotency, and pagination.
 
-## 8. Stage 3 and current process verification (2026-10-29)
+## 8. Stage 3 and Stage 4 process verification (2026-10-29)
 
 The 119-test / 404-assertion suite passes, including 16 wager HTTP/PostgreSQL integration tests. It verifies `200`, `202`, `400`, `404`, `409`, `422`, and `503` behavior; durable pending/rejected outcomes; response-snapshot replay; payload/identity conflict; the 50-identical-request and concurrent-bet cases; and provider/external and internal-ID reads. The full integration suite contains 47 PostgreSQL tests / 229 assertions.
 
-The Stage 3 wager-concurrency results cover concurrent HTTP requests to one Nest process, not races between independently running API/consumer processes. Stage 4 separately proves the API/consumer/publisher process topology and crash-recovery paths; it does not prove cross-process hot-wallet/idempotency races. `/health/ready` is implemented and checks PostgreSQL plus configured SQS queues. Provider authentication and OpenAPI UI serving are not implemented; additionally, no provider-identity port/guard exists in code yet.
+The Stage 3 wager-concurrency results cover concurrent HTTP requests to one Nest process. Stage 4 separately proves the API/consumer/publisher process topology and crash-recovery paths. Stage 5 adds cross-process wager/idempotency races and an explicit provider identity port. `/health/ready` checks PostgreSQL and configured SQS queues. Provider authentication and OpenAPI UI serving are not implemented.
+
+## 9. Stage 5 identity and metrics verification (2026-10-30)
+
+Provider submit and external-identity read routes invoke `ProviderIdentityPort`, compare any returned authenticated provider with the requested provider ID, and reject mismatches. Unit tests cover the unconfigured adapter, matching identity, and mismatch rejection. The default adapter is deliberately unauthenticated; production authentication is still a separate external-IdP integration.
+
+`GET /metrics` is specified in OpenAPI and emits Prometheus exposition. It is implemented on API and worker roles and exports wager outcomes/replays/conflicts, Inbox duplicates, retry sources, application DLQ routing and approximate DLQ depth, PostgreSQL lock conflicts, wager latency, Outbox pending count/age, and reconciliation discrepancies. Metrics are process-local and require scraping every process.
 
 ## 7. Wallet HTTP audit correction (2026-10-29)
 

@@ -2,6 +2,7 @@ import { Controller, Get, Logger, Res } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { loadEnvironment } from "../../config/environment";
 import { SqsQueueClient } from "../messaging/infrastructure/sqs-queue-client";
+import { currentCorrelationId } from "../../observability/correlation-context";
 
 @Controller("health")
 export class HealthController {
@@ -56,6 +57,7 @@ export class HealthController {
       this.logger.error(
         JSON.stringify({
           event: "readiness_dependency_failed",
+          correlationId: currentCorrelationId(),
           dependency: name,
           errorType: error instanceof Error ? error.name : "UnknownError",
         }),

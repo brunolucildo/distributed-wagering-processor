@@ -8,9 +8,11 @@ import { WalletService } from "./application/wallet-service";
 import { PostgresWalletRepository } from "./infrastructure/postgres-wallet-repository";
 import { ReconciliationMonitor } from "./presentation/http/reconciliation-monitor";
 import { WalletController } from "./presentation/http/wallet.controller";
+import { MetricsModule } from "../metrics/metrics.module";
+import { MetricsService } from "../metrics/metrics.service";
 
 @Module({
-  imports: [PersistenceModule],
+  imports: [PersistenceModule, MetricsModule],
   controllers: [WalletController],
   providers: [
     {
@@ -29,7 +31,12 @@ import { WalletController } from "./presentation/http/wallet.controller";
       useFactory: (wallets: WalletRepository, ledger: LedgerRepository) =>
         new WalletService(wallets, ledger),
     },
-    ReconciliationMonitor,
+    {
+      provide: ReconciliationMonitor,
+      inject: [MetricsService],
+      useFactory: (metrics: MetricsService) =>
+        new ReconciliationMonitor(metrics),
+    },
   ],
   exports: [WalletService, LedgerRepository],
 })

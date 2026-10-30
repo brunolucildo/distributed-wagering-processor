@@ -1,6 +1,7 @@
 import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   GetQueueUrlCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
@@ -91,6 +92,7 @@ export class SqsQueueClient {
     body: string,
     messageId: string,
     failureCode: string,
+    correlationId?: string,
   ): Promise<void> {
     await this.client.send(
       new SendMessageCommand({
@@ -105,6 +107,14 @@ export class SqsQueueClient {
             DataType: "String",
             StringValue: failureCode.slice(0, 100),
           },
+          ...(correlationId
+            ? {
+                correlationId: {
+                  DataType: "String",
+                  StringValue: correlationId,
+                },
+              }
+            : {}),
         },
       }),
     );
@@ -155,6 +165,23 @@ export class SqsQueueClient {
 
   async checkConnectivity(queueNames: string[]): Promise<void> {
     await Promise.all(queueNames.map((queueName) => this.queueUrl(queueName)));
+  }
+
+  async getApproximateQueueDepth(queueName: string): Promise<number> {
+    const result = await this.client.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: await this.queueUrl(queueName),
+        AttributeNames: [
+          "ApproximateNumberOfMessages",
+          "ApproximateNumberOfMessagesNotVisible",
+        ],
+      }),
+    );
+    const visible = Number(result.Attributes?.ApproximateNumberOfMessages ?? 0);
+    const inFlight = Number(
+      result.Attributes?.ApproximateNumberOfMessagesNotVisible ?? 0,
+    );
+    return visible + inFlight;
   }
 
   onModuleDestroy(): void {

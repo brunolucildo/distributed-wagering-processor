@@ -1,6 +1,6 @@
 # 01 — Persistence and Concurrency
 
-**Status:** Persistence and Stage 3 HTTP races are verified within one Nest process. Stage 4 separately verifies API/consumer/publisher process topology, Inbox/Outbox crash recovery, and two concurrent publisher processes. Cross-process financial idempotency/hot-wallet races remain open; finite-money and HTTP corrections are covered below.
+**Status:** Persistence and Stage 3 HTTP races are verified within one Nest process. Stage 4 separately verifies API/consumer/publisher process topology, Inbox/Outbox crash recovery, and two concurrent publisher processes. Stage 5 now verifies duplicate idempotency and competing hot-wallet wagers across two independent API processes, including ledger reconstruction. Finite-money and HTTP corrections are covered below.
 **Source of truth:** PostgreSQL.
 
 ## 1. Tables and durable constraints
@@ -78,8 +78,12 @@ The HTTP wagering use case applies ordered PostgreSQL transaction advisory locks
 
 The Stage 3 suite passed 119 tests / 404 assertions, including 47 real PostgreSQL integration tests / 229 assertions. Coverage includes 50 identical concurrent HTTP submissions with one financial effect, concurrent `80.00 BRL` bets against a `100.00 BRL` balance, concurrent cross-kind reversals, transaction rollback on injected Outbox failure, replay snapshots, transient whole-transaction retry, and durable currency-mismatch rejection that blocks an unsafe migration rollback. These wager-race tests run against one Nest application and multiple PostgreSQL connections.
 
-## 8. Stage 4 and current multi-process boundary (2026-10-29)
+## 8. Stage 4 and current multi-process evidence (2026-10-29)
 
 The current full suite runs 136 tests / 461 assertions (135 pass; the POSIX-only shutdown-timeout test is skipped on Windows). Stage 4 integration tests verify three separate API/consumer/publisher processes, two publisher processes claiming disjoint Outbox batches, process-kill recovery after Inbox commit/before ACK and after SQS accepts an Outbox event/before confirmation, and five-receive redrive to DLQ.
 
-This proves the process topology and those recovery paths, not concurrent same-wallet or same-idempotency-key wagers across distinct API/consumer processes. The required cross-process financial race test remains open. See [Messaging and Recovery](./03-messaging-and-recovery.md) for shutdown fault-injection limitations.
+This proves the process topology and those recovery paths, not concurrent same-wallet or same-idempotency-key wagers across distinct API/consumer processes. Stage 5 closes that separate financial-race gap; see the following section.
+
+## 9. Stage 5 cross-process financial races (2026-10-30)
+
+The integration test starts two independent API processes against the same temporary PostgreSQL database. Concurrent identical requests using the same provider/external identity and idempotency key return one original response plus one replay and create one financial effect. It then races two distinct `80.00 BRL` bets against a `100.00 BRL` wallet across those processes: one succeeds, one is durably rejected, the final balance is `19.00 BRL` after the preceding `1.00 BRL` bet, and SQL reconstruction from all signed ledger entries equals the materialized balance. The temporary test database is dropped by the fixture.

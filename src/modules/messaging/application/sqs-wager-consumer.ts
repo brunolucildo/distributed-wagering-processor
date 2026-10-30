@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Logger } from "@nestjs/common";
 import { DomainError } from "../../wallets/domain/errors/domain-error";
 import { WalletNotFoundError } from "../../wallets/application/wallet-errors";
@@ -8,6 +8,13 @@ import { MikroORM } from "@mikro-orm/postgresql";
 import { loadEnvironment } from "../../../config/environment";
 import { SqsQueueClient } from "../infrastructure/sqs-queue-client";
 import { z } from "zod";
+import { MetricsService } from "../../metrics/metrics.service";
+import type { WagerStatus } from "../../wagering/domain/entities/wager-transaction";
+import {
+  correlationIdFromPayload,
+  currentCorrelationId,
+  runWithCorrelation,
+} from "../../../observability/correlation-context";
 
 const Identifier = z.string().trim().min(1).max(200);
 const EnvelopeIdentitySchema = z
@@ -16,6 +23,7 @@ const EnvelopeIdentitySchema = z
 const WagerEnvelopeSchema = z
   .object({
     messageId: Identifier,
+    correlationId: z.string().uuid().optional(),
     type: z.literal("WagerTransactionRequested"),
     version: z.literal(1),
     occurredAt: z.string().datetime(),
@@ -45,9 +53,26 @@ type WagerEnvelope = z.infer<typeof WagerEnvelopeSchema>;
 type QueueMessage = Awaited<ReturnType<SqsQueueClient["receive"]>>[number];
 
 type InboxDisposition =
-  | { kind: "completed" }
-  | { kind: "duplicate" }
-  | { kind: "dead-letter"; failureCode: string };
+  | {
+      kind: "completed";
+      status: WagerStatus;
+      replayed: boolean;
+      transactionId: string;
+      providerId: string;
+      walletId: string;
+    }
+  | {
+      kind: "duplicate";
+      transactionId?: string;
+      providerId?: string;
+      walletId?: string;
+    }
+  | {
+      kind: "dead-letter";
+      failureCode: string;
+      providerId?: string;
+      walletId?: string;
+    };
 
 export class SqsWagerConsumer {
   private readonly logger = new Logger(SqsWagerConsumer.name);
@@ -58,6 +83,7 @@ export class SqsWagerConsumer {
     private readonly orm: MikroORM,
     private readonly wagers: WagerApplicationService,
     private readonly sqs: SqsQueueClient,
+    private readonly metrics = new MetricsService(),
   ) {}
 
   async run(): Promise<void> {
@@ -65,9 +91,11 @@ export class SqsWagerConsumer {
       try {
         await this.pollOnce();
       } catch (error) {
+        this.metrics.recordRetry("consumer");
         this.logger.error(
           JSON.stringify({
             event: "wager_queue_poll_failed",
+            correlationId: currentCorrelationId(),
             errorType: error instanceof Error ? error.name : "UnknownError",
           }),
         );
@@ -90,35 +118,45 @@ export class SqsWagerConsumer {
   }
 
   private async processMessage(message: QueueMessage): Promise<void> {
-    let extendingVisibility = false;
-    const visibilityHeartbeat = setInterval(() => {
-      if (extendingVisibility) return;
-      extendingVisibility = true;
-      void this.sqs
-        .extendVisibility(
-          this.environment.SQS_WAGER_QUEUE,
-          message.receiptHandle,
-          60,
-        )
-        .catch((error: unknown) => {
-          this.logger.error(
-            JSON.stringify({
-              event: "wager_message_visibility_extension_failed",
-              errorType: error instanceof Error ? error.name : "UnknownError",
-              messageId: message.messageId,
-            }),
-          );
-        })
-        .finally(() => {
-          extendingVisibility = false;
-        });
-    }, 25_000);
-    visibilityHeartbeat.unref();
-    try {
-      await this.processMessageWithLease(message);
-    } finally {
-      clearInterval(visibilityHeartbeat);
-    }
+    const correlationId =
+      this.correlationIdFromMessage(message.body) ?? randomUUID();
+    await runWithCorrelation(correlationId, async () => {
+      const startedAt = performance.now();
+      let extendingVisibility = false;
+      const visibilityHeartbeat = setInterval(() => {
+        if (extendingVisibility) return;
+        extendingVisibility = true;
+        void this.sqs
+          .extendVisibility(
+            this.environment.SQS_WAGER_QUEUE,
+            message.receiptHandle,
+            60,
+          )
+          .catch((error: unknown) => {
+            this.logger.error(
+              JSON.stringify({
+                event: "wager_message_visibility_extension_failed",
+                correlationId: currentCorrelationId(),
+                errorType: error instanceof Error ? error.name : "UnknownError",
+                messageId: message.messageId,
+              }),
+            );
+          })
+          .finally(() => {
+            extendingVisibility = false;
+          });
+      }, 25_000);
+      visibilityHeartbeat.unref();
+      try {
+        await this.processMessageWithLease(message);
+      } finally {
+        clearInterval(visibilityHeartbeat);
+        this.metrics.observeWagerDuration(
+          (performance.now() - startedAt) / 1_000,
+          "sqs",
+        );
+      }
+    });
   }
 
   private async processMessageWithLease(message: QueueMessage): Promise<void> {
@@ -184,15 +222,43 @@ export class SqsWagerConsumer {
         return {
           kind: "dead-letter",
           failureCode: "MESSAGE_ID_PAYLOAD_CONFLICT",
+          ...(envelope.success
+            ? {
+                providerId: envelope.data.data.providerId,
+                walletId: envelope.data.data.walletId,
+              }
+            : {}),
         } satisfies InboxDisposition;
       }
       if (row.status === "COMPLETED") {
+        if (envelope.success) {
+          const transactions = await em.execute<Array<{ id: string }>>(
+            `select id from wager_transactions
+             where provider_id = ? and external_transaction_id = ?`,
+            [
+              envelope.data.data.providerId,
+              envelope.data.data.externalTransactionId,
+            ],
+          );
+          return {
+            kind: "duplicate",
+            ...(transactions[0] ? { transactionId: transactions[0].id } : {}),
+            providerId: envelope.data.data.providerId,
+            walletId: envelope.data.data.walletId,
+          } satisfies InboxDisposition;
+        }
         return { kind: "duplicate" } satisfies InboxDisposition;
       }
       if (row.status === "FAILED") {
         return {
           kind: "dead-letter",
           failureCode: row.failure_code ?? "PERMANENT_MESSAGE_FAILURE",
+          ...(envelope.success
+            ? {
+                providerId: envelope.data.data.providerId,
+                walletId: envelope.data.data.walletId,
+              }
+            : {}),
         } satisfies InboxDisposition;
       }
       if (!envelope.success) {
@@ -207,12 +273,19 @@ export class SqsWagerConsumer {
           failureCode: "INVALID_MESSAGE_CONTRACT",
         } satisfies InboxDisposition;
       }
+      let wagerStatus: WagerStatus;
+      let wagerReplayed: boolean;
+      let wagerTransactionId: string;
       try {
-        await this.wagers.submit(
+        const wagerResult = await this.wagers.submit(
           this.toSubmission(envelope.data),
           envelope.data.data.idempotencyKey,
           em,
+          envelope.data.correlationId ?? currentCorrelationId(),
         );
+        wagerStatus = wagerResult.body.status;
+        wagerReplayed = wagerResult.body.idempotentReplay;
+        wagerTransactionId = wagerResult.body.transactionId;
       } catch (error) {
         if (
           !(error instanceof DomainError) &&
@@ -236,6 +309,8 @@ export class SqsWagerConsumer {
         return {
           kind: "dead-letter",
           failureCode,
+          providerId: envelope.data.data.providerId,
+          walletId: envelope.data.data.walletId,
         } satisfies InboxDisposition;
       }
       await em.execute(
@@ -244,16 +319,35 @@ export class SqsWagerConsumer {
          where consumer_name = ? and message_id = ?`,
         ["wager-sqs-v1", messageId],
       );
-      return { kind: "completed" } satisfies InboxDisposition;
+      return {
+        kind: "completed",
+        status: wagerStatus,
+        replayed: wagerReplayed,
+        transactionId: wagerTransactionId,
+        providerId: envelope.data.data.providerId,
+        walletId: envelope.data.data.walletId,
+      } satisfies InboxDisposition;
     });
 
     if (inboxOutcome.kind === "dead-letter") {
+      if (inboxOutcome.failureCode === "IDEMPOTENCY_CONFLICT") {
+        this.metrics.recordIdempotencyConflict();
+      }
       await this.deadLetterAndDelete(
         message,
         inboxOutcome.failureCode,
         messageId,
+        inboxOutcome,
       );
       return;
+    }
+    if (inboxOutcome.kind === "duplicate") {
+      this.metrics.recordInboxDuplicate();
+    } else {
+      this.metrics.recordWagerOutcome(
+        inboxOutcome.status,
+        inboxOutcome.replayed,
+      );
     }
     await this.sqs.delete(
       this.environment.SQS_WAGER_QUEUE,
@@ -263,8 +357,21 @@ export class SqsWagerConsumer {
       JSON.stringify({
         event: "wager_message_acknowledged",
         disposition: inboxOutcome.kind,
+        correlationId: currentCorrelationId(),
         messageId,
         receiveCount: message.receiveCount,
+        ...("transactionId" in inboxOutcome &&
+        typeof inboxOutcome.transactionId === "string"
+          ? { transactionId: inboxOutcome.transactionId }
+          : {}),
+        ...("providerId" in inboxOutcome &&
+        typeof inboxOutcome.providerId === "string"
+          ? { providerId: inboxOutcome.providerId }
+          : {}),
+        ...("walletId" in inboxOutcome &&
+        typeof inboxOutcome.walletId === "string"
+          ? { walletId: inboxOutcome.walletId }
+          : {}),
       }),
     );
   }
@@ -273,12 +380,23 @@ export class SqsWagerConsumer {
     message: QueueMessage,
     failureCode: string,
     messageId: string,
+    identifiers: { providerId?: string; walletId?: string } = {},
   ): Promise<void> {
     await this.sqs.sendDeadLetter(
       this.environment.SQS_DLQ_QUEUE,
       message.body,
       messageId,
       failureCode,
+      currentCorrelationId(),
+    );
+    this.metrics.recordDeadLetter(
+      failureCode === "MESSAGE_ID_PAYLOAD_CONFLICT"
+        ? "message_conflict"
+        : failureCode === "INVALID_JSON" ||
+            failureCode === "INVALID_MESSAGE_ENVELOPE" ||
+            failureCode === "INVALID_MESSAGE_CONTRACT"
+          ? "invalid_message"
+          : "business_failure",
     );
     await this.sqs.delete(
       this.environment.SQS_WAGER_QUEUE,
@@ -288,8 +406,10 @@ export class SqsWagerConsumer {
       JSON.stringify({
         event: "wager_message_dead_lettered",
         failureCode,
+        correlationId: currentCorrelationId(),
         messageId,
         receiveCount: message.receiveCount,
+        ...identifiers,
       }),
     );
   }
@@ -301,6 +421,14 @@ export class SqsWagerConsumer {
       if (error instanceof SyntaxError) return undefined;
       throw error;
     }
+  }
+
+  private correlationIdFromMessage(body: string): string | undefined {
+    const parsed = this.parseJson(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    return correlationIdFromPayload(parsed);
   }
 
   private toSubmission(envelope: WagerEnvelope) {
