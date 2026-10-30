@@ -1,6 +1,6 @@
 # 04 — Operations and Verification
 
-**Status:** API/worker roles, readiness, Stage 4 messaging/recovery, Prometheus metrics, a provider-identity extension point, cross-process wager/idempotency races, POSIX shutdown-timeout fault injection, and correlation propagation are implemented. The read-only reliability review is complete and its findings were corrected. Authentication is intentionally not enabled. The visual VS Code agent-picker confirmation from Stage 0 remains unverified.
+**Status:** API/worker roles, readiness, Stage 4 messaging/recovery, Prometheus metrics, a provider-identity extension point, cross-process wager/idempotency races, POSIX shutdown-timeout fault injection, and correlation propagation are implemented. The read-only reliability review is complete and its findings were corrected. Workspace-agent selection was visually confirmed in VS Code. Authentication is intentionally not enabled.
 
 ## 1. Runtime processes
 
@@ -79,10 +79,10 @@ Tests that mock PostgreSQL/SQS may supplement, but must not replace, the integra
 
 ## 6. Current verification boundary (2026-10-30)
 
-The full suite ran **144 tests / 516 assertions** in a Linux Bun 1.4.4 container: all passed, including the POSIX shutdown-timeout fault-injection test. Lint, source/test and documentation formatting, type-check, and build also passed. Ubuntu CI is configured to repeat the complete gates.
+The full suite ran **145 tests / 522 assertions** in a Linux Bun 1.4.4 container: all passed, including the POSIX shutdown-timeout fault-injection test and parallel distinct-wallet processing. Lint, source/test and documentation formatting, type-check, and build also passed. Ubuntu CI is configured to repeat the complete gates.
 
 The integration harness provisions uniquely named temporary databases and queues; it does not reset the configured development database. The shutdown-timeout test injects a blocked database transaction and verifies process exit/rollback under POSIX SIGTERM. A separate two-API-process test races duplicate idempotency and competing hot-wallet requests and reconstructs the final ledger balance.
 
 Readiness is implemented for PostgreSQL and configured SQS queues. `/metrics` exports the specified counters and gauges per process, including Outbox lag and approximate SQS DLQ depth. Provider wager routes have an explicit identity port, but its default adapter does not authenticate. Integration tests verify custom and generated correlation IDs across HTTP and SQS, Outbox records, and pending-reference recovery.
 
-Docker Compose starts PostgreSQL and LocalStack, not application roles. Run the API/workers with the documented Bun entrypoint and unique `WORKER_HEALTH_PORT` values. Stage 5 is complete; authentication remains an accepted documented non-goal, and the Stage 0 visual VS Code agent-picker check is still unverified.
+Docker Compose starts PostgreSQL and LocalStack, not application roles. Run the API/workers with the documented Bun entrypoint and unique `WORKER_HEALTH_PORT` values. Stage 5 is complete; authentication remains an accepted documented non-goal.

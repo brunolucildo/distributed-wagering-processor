@@ -1,6 +1,6 @@
 # Agent-Assisted Development Workflow
 
-**Status:** Workspace agents available; Stage 0–5 execution recorded below. Stage 0's visual VS Code agent-picker confirmation remains unverified.
+**Status:** Workspace agents available; Stage 0–5 execution recorded below. Workspace-agent selection was visually confirmed in VS Code on 2026-10-30.
 **Purpose:** Demonstrate practical creation and orchestration of project-specific coding agents while keeping financial correctness and delivery accountability explicit.
 
 ## 1. Scope
@@ -81,4 +81,8 @@ The Reliability Reviewer performed a bounded, read-only review of the integrated
 
 The orchestrator directly implemented and tested correlation propagation, rather than delegating this continuous cross-cutting change: HTTP middleware validates or generates UUIDs and returns the effective ID; SQS accepts an optional correlation UUID and generates one when absent; the wager application service retains it on Outbox events; pending-reference recovery reuses the initial event's ID; publisher, consumer, recovery, and HTTP error logs include the ID where available; DLQ routing includes it as a message attribute. Integration tests cover custom HTTP IDs, generated HTTP IDs, supplied SQS IDs across separate processes, missing SQS IDs, and recovery.
 
-Final verification used a Linux Bun 1.4.4 container against PostgreSQL and LocalStack. The full suite passed **144 tests / 516 assertions**, including the POSIX shutdown-timeout test. Lint, source/test formatting, documentation formatting, type-check, and build passed. Authentication remains intentionally disabled. The visual Stage 0 VS Code agent-picker check is not claimed as verified; it requires a visual check in the target VS Code Chat workflow.
+Final verification used a Linux Bun 1.4.4 container against PostgreSQL and LocalStack. The full suite passed **145 tests / 522 assertions**, including the POSIX shutdown-timeout test and parallel distinct-wallet processing. Lint, source/test formatting, documentation formatting, type-check, and build passed. Authentication remains intentionally disabled.
+
+### Stage 0 visual agent-picker confirmation (2026-10-30)
+
+In the target VS Code workspace, the agent picker visibly listed `Domain Engineer`, `Reliability Reviewer`, and `Test Engineer`. Each agent was selected individually and appeared as the active chat agent. The original `Agent` mode was restored afterward. This confirms VS Code discovery and selection only; no task was delegated during this visual check, and it does not claim independent agent execution or validation.

@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-**Status:** Stage 5 is complete. Prometheus metrics, a provider-identity extension point, cross-process financial-race tests, Ubuntu CI, POSIX shutdown-timeout verification, correlation propagation, and handoff are implemented. The read-only reliability review found two low-severity issues; both were fixed and independently rechecked. Stage 0's visual VS Code agent-picker check remains unverified.
+**Status:** Stages 0–5 are complete. Prometheus metrics, a provider-identity extension point, cross-process financial-race tests, Ubuntu CI, POSIX shutdown-timeout verification, correlation propagation, and handoff are implemented. The read-only reliability review found two low-severity issues; both were fixed and independently rechecked. Workspace agents were visually confirmed in the VS Code picker.
 **Approach:** Complete each stage's exit criteria before starting dependent work. Keep each stage reviewable and update the specs/architecture when an implementation decision changes.
 
 Agent-assisted work follows [Agent-Assisted Development Workflow](./agent-assisted-development.md). Agents are introduced in Stage 0 and used selectively for independent, bounded work in later stages; the orchestrator remains responsible for integration and verification.
@@ -13,7 +13,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Goal:** Establish a reproducible Bun/NestJS project and local development baseline.
 
-**Delivery status:** Foundation, health, local dependencies and FIFO provisioning are present and tested. The clean-install workaround was verified previously; it was not re-executed during the 2026-10-29 revalidation. Visual selection of the custom agents in the VS Code picker remains unverified, so that exit check is still open.
+**Delivery status:** Foundation, health, local dependencies and FIFO provisioning are present and tested. The clean-install workaround was verified previously; it was not re-executed during the 2026-10-29 revalidation. On 2026-10-30, Domain Engineer, Reliability Reviewer and Test Engineer were each visually selected in the VS Code picker; the original `Agent` mode was restored afterward.
 
 **Work**
 
@@ -114,7 +114,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Verification (2026-10-29):** 136 tests / 461 assertions ran across seven files: 135 passed and the POSIX-only shutdown-timeout test was skipped on Windows. The 14 Stage 4 integration cases use PostgreSQL and LocalStack; 13 passed. They verify three independent API/consumer/publisher processes, two separate publisher processes claiming disjoint batches, process death after Inbox commit/before ACK and Outbox publish/before confirmation, restart recovery without duplicate financial effects, five-receive source-to-DLQ redrive, Inbox conflicts, readiness, replay/retry, and pending-reference recovery/expiry. Lint, type-check, build, and format checks pass.
 
-**Boundary:** The shutdown-timeout integration test injects a blocked database transaction and checks process termination/rollback. It is skipped on Windows because child-process SIGTERM is not delivered as a catchable POSIX signal there; the Stage 5 Linux Bun run now verifies it. Stage 0's visual VS Code agent-picker check remains open.
+**Boundary:** The shutdown-timeout integration test injects a blocked database transaction and checks process termination/rollback. It is skipped on Windows because child-process SIGTERM is not delivered as a catchable POSIX signal there; the Stage 5 Linux Bun run now verifies it.
 
 **Work**
 
@@ -140,7 +140,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 **Delivery status:** Complete. `/metrics` exports per-process Prometheus counters/gauges; `ProviderIdentityPort` is wired to provider routes with an explicitly unauthenticated default; two API processes are tested for duplicate idempotency and competing hot-wallet wagers; Ubuntu CI runs the full suite including the POSIX shutdown-timeout test. Optional/generated correlation IDs propagate from HTTP and SQS through Outbox, recovery, logs, and DLQ metadata. The read-only reliability review is complete; two low-severity findings were corrected and independently checked. Authentication remains an explicit non-goal.
 
-**Verification evidence (2026-10-30):** The full Linux Bun 1.4.4 suite passed 144 tests / 516 assertions, including the POSIX shutdown fault test and new HTTP/SQS correlation cases. Lint, source/test and documentation formatting, type-check, and build also pass. The reliability review and handoff are complete. Stage 0's visual VS Code agent-picker check remains unverified.
+**Verification evidence (2026-10-30):** The full Linux Bun 1.4.4 suite passed 145 tests / 522 assertions, including the POSIX shutdown fault test, HTTP/SQS correlation cases, and parallel distinct-wallet processing. Lint, source/test and documentation formatting, type-check, and build also pass. The reliability review and handoff are complete. Workspace-agent selection was visually confirmed in VS Code.
 
 **Work**
 
@@ -157,7 +157,7 @@ Before a stage is considered complete, update the root `README.md` to reflect wh
 
 - All mandatory challenge completion criteria are demonstrably met.
 - A clean environment can follow the README to run the application and tests.
-- The development handoff records agent roles used, bounded tasks, reviewed outputs, and actual validation evidence without overstating agent guarantees; also record the still-unverified visual agent-picker check.
+- The development handoff records agent roles used, bounded tasks, reviewed outputs, actual validation evidence, and the visual agent-picker confirmation without overstating agent guarantees.
 - No unresolved high-risk behavior or undocumented deviations remain.
 
 ## Dependency overview
