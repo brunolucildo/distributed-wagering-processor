@@ -1,17 +1,17 @@
 # ARCHITECTURE.md — Distributed Wagering Processor
 
-> **Status:** Stage 5 concluído: métricas Prometheus, extensão de identidade, corridas financeiras entre processos, shutdown timeout POSIX, correlação uniforme e handoff estão implementados/testados. A confirmação visual da seleção de agentes no VS Code (Stage 0) permanece sem verificação.
+> **Status:** Stages 0–5 concluídos: métricas Prometheus, extensão de identidade, corridas financeiras entre processos, shutdown timeout POSIX, correlação uniforme e handoff estão implementados/testados. Os três agentes de workspace foram visualmente confirmados e selecionados no VS Code.
 > **Objetivo:** documentar as decisões, invariantes e trade-offs da implementação.  
 > **Escopo:** este documento descreve o desenho pretendido; decisões ainda não implementadas devem ser tratadas como plano, não como garantias já comprovadas.
 
 ### Estado implementado e limites da validação
 
-- **Stage 0:** Bun/NestJS, configuração, liveness, PostgreSQL/LocalStack e três filas FIFO disponíveis. A seleção visual dos agentes no VS Code continua sem confirmação.
+- **Stage 0:** Bun/NestJS, configuração, liveness, PostgreSQL/LocalStack e três filas FIFO disponíveis. Domain Engineer, Reliability Reviewer e Test Engineer aparecem e podem ser ativados no seletor de agentes do VS Code; após a verificação, o modo original `Agent` foi restaurado.
 - **Stage 1:** domínio puro, dinheiro exato em `bigint`, factories/rehydration, estados, operações, referências e reversões. `ProcessWager` é um serviço puro.
 - **Stage 2:** cinco tabelas, mappings MikroORM, migrations explícitas, abertura atômica de wallet, consultas, ledger append-only, cursor e reconciliação sem reparo. O teste de rollback nas cinco tabelas valida a infraestrutura, não um pipeline SQS.
 - **Stage 3:** API HTTP de apostas, hash canônico, locks advisory ordenados para identidade/idempotência, lock de wallet, retries limitados, replay de snapshot e persistência atômica de transaction/wallet/ledger/Outbox.
 - **Stage 4:** consumidor SQS com Inbox transacional, publisher Outbox com lease/retry/replay, reprocessador de referências com lease/expiração, endpoint de readiness e bootstrap por função foram implementados. Testes PostgreSQL/LocalStack cobrem três processos independentes, dois publishers com claims disjuntos, crash/restart nos limites de ACK/publicação, redrive à DLQ e recuperação/expiração. O timeout de shutdown foi validado em POSIX.
-- **Stage 5 (concluído):** endpoint Prometheus por processo, métricas financeiras/operacionais, `ProviderIdentityPort` com adapter não autenticador por padrão, corridas entre dois processos API, CI Ubuntu e correlação de HTTP/SQS/Outbox/recovery estão implementados. A revisão de confiabilidade foi concluída e seus dois achados de baixa severidade foram corrigidos/verificados. Autenticação real continua fora do escopo. A confirmação visual da seleção de agentes no VS Code permanece pendente.
+- **Stage 5 (concluído):** endpoint Prometheus por processo, métricas financeiras/operacionais, `ProviderIdentityPort` com adapter não autenticador por padrão, corridas entre dois processos API, CI Ubuntu e correlação de HTTP/SQS/Outbox/recovery estão implementados. A revisão de confiabilidade foi concluída e seus dois achados de baixa severidade foram corrigidos/verificados. Autenticação real continua fora do escopo.
 
 A auditoria Stage 2 encontrou duas lacunas, ambas corrigidas. Após o Stage 3, a suíte passa em 119 testes / 404 assertions (47 testes de integração PostgreSQL / 229 assertions), além de lint, type-check, build e formatação:
 
@@ -658,20 +658,22 @@ O README do projeto deve documentar:
 
 A implementação será considerada pronta para avaliação quando:
 
-- [ ] a API e os workers iniciarem pelo procedimento documentado;
-- [ ] migrations e constraints puderem ser aplicadas em banco limpo;
-- [ ] o domínio não usar `number` para dinheiro;
-- [ ] o saldo não puder ficar negativo por concorrência;
-- [ ] idempotência persistente sobreviver a reinícios;
-- [ ] wallet, transação, ledger, inbox e outbox forem atômicos quando aplicável;
-- [ ] eventos não forem publicados antes do commit;
-- [ ] mensagens duplicadas e reentregues não duplicarem efeitos financeiros;
-- [ ] referências fora de ordem forem reprocessadas de forma persistente;
-- [ ] testes de concorrência rodarem contra PostgreSQL e SQS local reais;
-- [ ] três ou mais instâncias puderem operar sobre as mesmas dependências;
-- [ ] a reconciliação identificar divergências sem corrigi-las silenciosamente;
-- [ ] logs, métricas e health checks obrigatórios estiverem disponíveis;
-- [ ] `README.md` e este documento descreverem a implementação real, os trade-offs e as limitações.
+- [x] a API e os workers iniciarem pelo procedimento documentado;
+- [x] migrations e constraints puderem ser aplicadas em banco limpo;
+- [x] o domínio não usar `number` para dinheiro;
+- [x] o saldo não puder ficar negativo por concorrência;
+- [x] idempotência persistente sobreviver a reinícios;
+- [x] wallet, transação, ledger, inbox e outbox forem atômicos quando aplicável;
+- [x] eventos não forem publicados antes do commit;
+- [x] mensagens duplicadas e reentregues não duplicarem efeitos financeiros;
+- [x] referências fora de ordem forem reprocessadas de forma persistente;
+- [x] testes de concorrência rodarem contra PostgreSQL e SQS local reais, incluindo submissões paralelas em wallets distintas;
+- [x] três ou mais instâncias puderem operar sobre as mesmas dependências;
+- [x] a reconciliação identificar divergências sem corrigi-las silenciosamente;
+- [x] logs, métricas e health checks obrigatórios estiverem disponíveis;
+- [x] `README.md` e este documento descreverem a implementação real, os trade-offs e as limitações.
+
+Em 2026-10-30, a confirmação visual do workflow Stage 0 foi concluída: Domain Engineer, Reliability Reviewer e Test Engineer foram vistos no seletor do VS Code e cada um foi ativado individualmente. O modo padrão `Agent` foi restaurado após a verificação. Isso valida descoberta e seleção na interface, não delegação ou resultados de execução.
 
 ---
 

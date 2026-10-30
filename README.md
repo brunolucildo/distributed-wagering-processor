@@ -2,7 +2,7 @@
 
 A modular financial backend designed to preserve wallet and ledger correctness under duplicate requests, out-of-order delivery, concurrency, and retries.
 
-> **Project status: Stage 5 implementation complete.** Prometheus metrics, a provider-identity extension point, cross-process financial-race tests, POSIX shutdown-timeout verification, and correlation propagation across HTTP, SQS, Outbox, and recovery are implemented. The VS Code visual agent-picker confirmation from Stage 0 remains unverified.
+> **Project status: Stage 5 implementation complete.** Prometheus metrics, a provider-identity extension point, cross-process financial-race tests, POSIX shutdown-timeout verification, and correlation propagation across HTTP, SQS, Outbox, and recovery are implemented. Workspace agents were visually confirmed as selectable in VS Code.
 
 ## Technology
 
@@ -101,7 +101,7 @@ $env:WORKER_ROLE = "outbox-publisher"; $env:WORKER_HEALTH_PORT = "3002"; bun run
 $env:WORKER_ROLE = "reference-reprocessor"; $env:WORKER_HEALTH_PORT = "3003"; bun run start:dev
 ```
 
-Wager queue messages use the `WagerTransactionRequested` envelope: `messageId`, `type`, `version: 1`, ISO `occurredAt`, and a `data` object containing the HTTP wager fields plus `idempotencyKey`. `OPENING` is rejected. FIFO group ID is `walletId`; PostgreSQL Inbox/idempotency are the correctness boundary.
+Wager queue messages use the `WagerTransactionRequested` envelope: `messageId`, optional UUID `correlationId`, `type`, `version: 1`, ISO `occurredAt`, and a `data` object containing the HTTP wager fields plus `idempotencyKey`. The consumer generates a correlation ID when absent; `OPENING` is rejected. FIFO group ID is `walletId`; PostgreSQL Inbox/idempotency are the correctness boundary.
 
 Exhausted Outbox events remain `FAILED`. After reviewing the event, requeue one explicitly with `$env:OUTBOX_EVENT_ID = "<event-uuid>"; bun run outbox:replay`; this resets its retry counter and makes it eligible for publication.
 
@@ -123,14 +123,14 @@ Use the returned wallet ID with `GET /wallets/:walletId`, `GET /wallets/:walletI
 
 ## Development progress
 
-| Stage                     | Status                                                                                              |
-| ------------------------- | --------------------------------------------------------------------------------------------------- |
-| 0: Foundation             | Implemented; visual VS Code agent selection remains unverified                                      |
-| 1: Domain                 | Recovered from local stash and validated                                                            |
-| 2: Persistence            | Delivered; finite-value and error-envelope corrections verified                                     |
-| 3: API and idempotency    | Delivered and verified                                                                              |
-| 4: Messaging and recovery | Multi-process, crash/restart, redrive, and POSIX shutdown-timeout verified                          |
-| 5: Operations and handoff | Implementation/tests in progress; reliability review complete; correlation and final handoff remain |
+| Stage                     | Status                                                                     |
+| ------------------------- | -------------------------------------------------------------------------- |
+| 0: Foundation             | Implemented; workspace agents visually confirmed in the VS Code picker     |
+| 1: Domain                 | Recovered from local stash and validated                                   |
+| 2: Persistence            | Delivered; finite-value and error-envelope corrections verified            |
+| 3: API and idempotency    | Delivered and verified                                                     |
+| 4: Messaging and recovery | Multi-process, crash/restart, redrive, and POSIX shutdown-timeout verified |
+| 5: Operations and handoff | Delivered and verified                                                     |
 
 Stage 1 recovery restored `Money`, immutable wallet and ledger entities, wager lifecycle and operation/reference/reversal rules, domain errors, integration event envelopes, and two domain test files. The recovery preserved the current Stage 0 foundation and both existing stashes.
 
@@ -181,7 +181,7 @@ Integration coverage now starts two independent API processes and races both an 
 
 Correlation IDs are accepted and validated from the optional `X-Correlation-Id` HTTP header; otherwise the API generates one and returns it on the response. SQS wager envelopes accept an optional UUID and generate one when absent. The same ID is retained on Outbox events and across pending-reference recovery, and is included in relevant structured logs and DLQ message attributes. Integration tests verify supplied and generated IDs end to end.
 
-The read-only Reliability Reviewer identified two low-severity issues in retry metrics and test port allocation. Retry metrics now increment only after a lease-owned update succeeds; the multi-process test allocates its second port after the first API is listening. Both fixes were independently rechecked. Final Linux validation evidence and the agent-role record are in the [roadmap](./docs/plans/implementation-roadmap.md) and [agent-assisted workflow](./docs/plans/agent-assisted-development.md). Stage 0's visual VS Code agent-picker check remains unverified; authentication remains intentionally disabled.
+The read-only Reliability Reviewer identified two low-severity issues in retry metrics and test port allocation. Retry metrics now increment only after a lease-owned update succeeds; the multi-process test allocates its second port after the first API is listening. Both fixes were independently rechecked. Final Linux validation evidence and the agent-role record are in the [roadmap](./docs/plans/implementation-roadmap.md) and [agent-assisted workflow](./docs/plans/agent-assisted-development.md). The three workspace agents were visually confirmed in the VS Code picker and individually activated; authentication remains intentionally disabled.
 
 Git attributes enforce LF for text files, including the Linux queue initialization script and Prettier-managed source files. During the earlier Stage 1 correction pass, normalization and a LocalStack restart produced `SUCCESSFUL` initialization, all three queues and healthy Compose services. That earlier pass did not repeat PostgreSQL connectivity or HTTP liveness; compiled API/database checks were subsequently exercised in Stage 2 and this revalidation.
 

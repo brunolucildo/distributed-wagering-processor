@@ -606,6 +606,55 @@ describe("Stage 3 / wagering API and idempotency", () => {
     ).toEqual([{ direction: "DEBIT", amount: "80.00" }]);
   });
 
+  test("submissions for distinct wallets can progress concurrently", async () => {
+    const distinctWallets = await Promise.all([
+      createWallet("10.00"),
+      createWallet("10.00"),
+    ]);
+    const results = await Promise.all(
+      distinctWallets.map((wallet) =>
+        submit(
+          wager(wallet.id, {
+            playerId: wallet.playerId,
+            externalTransactionId: randomUUID(),
+            amount: "1.00",
+          }),
+        ),
+      ),
+    );
+
+    expect(results.map((result) => result.status)).toEqual([200, 200]);
+    const balances = await execute<
+      Array<{
+        wallet_id: string;
+        stored_balance: string;
+        ledger_balance: string;
+      }>
+    >(
+      `select wallet.id as wallet_id,
+              wallet.balance::text as stored_balance,
+              coalesce(sum(
+                case entry.direction
+                  when 'CREDIT' then entry.amount
+                  else -entry.amount
+                end
+              ), 0)::text as ledger_balance
+       from wallets as wallet
+       left join wallet_ledger_entries as entry
+         on entry.wallet_id = wallet.id
+       where wallet.id in (?, ?)
+       group by wallet.id
+       order by wallet.id`,
+      distinctWallets.map((wallet) => wallet.id),
+    );
+
+    expect(balances).toHaveLength(2);
+    for (const balance of balances) {
+      expect(balance.stored_balance).toBe("9.00");
+      expect(balance.ledger_balance).toBe(balance.stored_balance);
+    }
+  });
+
   test("concurrent direct reversals are serialized and only one changes the wallet", async () => {
     const wallet = await createWallet("100.00");
     const bet = await submit(
