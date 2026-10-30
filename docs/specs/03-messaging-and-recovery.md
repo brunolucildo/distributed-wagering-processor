@@ -47,7 +47,7 @@ The outbox row is inserted in the same SQL transaction as the financial result. 
 
 The publisher claims due rows in a short database transaction using `FOR UPDATE SKIP LOCKED`, writes a persistent lease, commits, then publishes to SQS outside the database transaction. Successful publication marks the row published. A crashed publisher's lease expires after 60 seconds. Lease claims must be safe across multiple publisher processes.
 
-On publish failure, increment attempts and schedule exponential backoff starting at 1 second, capped at 5 minutes, with jitter. After 10 failed publish attempts, retain the outbox row as failed and emit a structured error log; metrics/alerting remain Stage 5 work. Explicit replay uses `OUTBOX_EVENT_ID` and `bun run outbox:replay`, resetting attempts and scheduling the event immediately. Publishing can be duplicated if the process crashes after SQS accepts a message but before the database marks it published, so consumers deduplicate by `eventId`.
+On publish failure, increment attempts and schedule exponential backoff starting at 1 second, capped at 5 minutes, with jitter. After 10 failed publish attempts, retain the outbox row as failed and emit a structured error log. Prometheus metrics were added in Stage 5; alerting policies are not defined by this project and must be configured by deployment operators. Explicit replay uses `OUTBOX_EVENT_ID` and `bun run outbox:replay`, resetting attempts and scheduling the event immediately. Publishing can be duplicated if the process crashes after SQS accepts a message but before the database marks it published, so consumers deduplicate by `eventId`.
 
 ## 5. Pending-reference worker
 
@@ -64,4 +64,4 @@ On publish failure, increment attempts and schedule exponential backoff starting
 
 - Integration tests use LocalStack and real PostgreSQL, not only mocks. They verify duplicate delivery, conflicting message ID payload, DLQ delivery, dependency readiness, two publisher processes claiming disjoint batches, explicit failed-event replay, pending-reference recovery, retry-limit expiry, and three concurrently running API/consumer/publisher processes.
 - Process-kill tests confirm recovery after commit-before-ACK and publish-before-confirm, including duplicate-safe financial state and persisted Outbox completion after restart. A transient database trigger verifies the five-receive source-to-DLQ redrive policy.
-- The shutdown-timeout test holds a PostgreSQL transaction open and verifies process exit and rollback, but is skipped on Windows because its SIGTERM injection requires POSIX process semantics. Run this case on POSIX CI; until then, graceful-shutdown timeout is not claimed as verified.
+- The shutdown-timeout test holds a PostgreSQL transaction open and verifies process exit and rollback. It is skipped on Windows because its SIGTERM injection requires POSIX process semantics; it passed in Linux Bun CI as recorded in the Stage 5 verification evidence.
