@@ -7,28 +7,41 @@ import { OutboxPublisher } from "./application/outbox-publisher";
 import { PendingReferenceReprocessor } from "./application/pending-reference-reprocessor";
 import { SqsWagerConsumer } from "./application/sqs-wager-consumer";
 import { SqsQueueClient } from "./infrastructure/sqs-queue-client";
+import { SqsClientModule } from "./infrastructure/sqs-client.module";
+import { MetricsModule } from "../metrics/metrics.module";
+import { MetricsService } from "../metrics/metrics.service";
 
 @Module({
-  imports: [PersistenceModule, WagerApplicationModule],
+  imports: [
+    PersistenceModule,
+    WagerApplicationModule,
+    MetricsModule,
+    SqsClientModule,
+  ],
   providers: [
     {
-      provide: SqsQueueClient,
-      useFactory: () => new SqsQueueClient(),
-    },
-    {
       provide: SqsWagerConsumer,
-      inject: [MikroORM, WagerApplicationService, SqsQueueClient],
+      inject: [
+        MikroORM,
+        WagerApplicationService,
+        SqsQueueClient,
+        MetricsService,
+      ],
       useFactory: (
         orm: MikroORM,
         wagers: WagerApplicationService,
         sqs: SqsQueueClient,
-      ) => new SqsWagerConsumer(orm, wagers, sqs),
+        metrics: MetricsService,
+      ) => new SqsWagerConsumer(orm, wagers, sqs, metrics),
     },
     {
       provide: OutboxPublisher,
-      inject: [MikroORM, SqsQueueClient],
-      useFactory: (orm: MikroORM, sqs: SqsQueueClient) =>
-        new OutboxPublisher(orm, sqs),
+      inject: [MikroORM, SqsQueueClient, MetricsService],
+      useFactory: (
+        orm: MikroORM,
+        sqs: SqsQueueClient,
+        metrics: MetricsService,
+      ) => new OutboxPublisher(orm, sqs, metrics),
     },
     {
       provide: PendingReferenceReprocessor,
@@ -40,7 +53,7 @@ import { SqsQueueClient } from "./infrastructure/sqs-queue-client";
   exports: [
     OutboxPublisher,
     PendingReferenceReprocessor,
-    SqsQueueClient,
+    SqsClientModule,
     SqsWagerConsumer,
   ],
 })

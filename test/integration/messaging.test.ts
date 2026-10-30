@@ -185,6 +185,7 @@ describe.serial("Stage 4 / messaging workers", () => {
   const environmentKeys = [
     "NODE_ENV",
     "DATABASE_URL",
+    "TEST_SQS_ENDPOINT",
     "AWS_REGION",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
@@ -221,13 +222,14 @@ describe.serial("Stage 4 / messaging workers", () => {
     process.env.AWS_REGION = "sa-east-1";
     process.env.AWS_ACCESS_KEY_ID = "test";
     process.env.AWS_SECRET_ACCESS_KEY = "test";
-    process.env.SQS_ENDPOINT = "http://localhost:4566";
+    process.env.SQS_ENDPOINT =
+      process.env.TEST_SQS_ENDPOINT ?? "http://localhost:4566";
     process.env.SQS_WAGER_QUEUE = queueNames.wager;
     process.env.SQS_DLQ_QUEUE = queueNames.deadLetter;
     process.env.SQS_EVENTS_QUEUE = queueNames.events;
     setupClient = new SQSClient({
       region: "sa-east-1",
-      endpoint: "http://localhost:4566",
+      endpoint: process.env.SQS_ENDPOINT,
       credentials: {
         accessKeyId: "test",
         secretAccessKey: "test",
@@ -378,6 +380,7 @@ describe.serial("Stage 4 / messaging workers", () => {
     playerId: string,
     overrides: Partial<{
       messageId: string;
+      correlationId: string | null;
       externalTransactionId: string;
       kind: "BET" | "WIN" | "LOSS" | "REFUND" | "ROLLBACK";
       amount: string;
@@ -387,6 +390,9 @@ describe.serial("Stage 4 / messaging workers", () => {
   ) {
     return {
       messageId: overrides.messageId ?? randomUUID(),
+      ...(overrides.correlationId === null
+        ? {}
+        : { correlationId: overrides.correlationId ?? randomUUID() }),
       type: "WagerTransactionRequested" as const,
       version: 1 as const,
       occurredAt: new Date().toISOString(),
@@ -515,6 +521,34 @@ describe.serial("Stage 4 / messaging workers", () => {
     }
   });
 
+  test("metrics endpoint exports wager outcomes and refreshed outbox backlog", async () => {
+    const wallet = await createWallet("10.00");
+    await wagers.submit(
+      {
+        providerId: "stage5-metrics-provider",
+        externalTransactionId: randomUUID(),
+        playerId: wallet.playerId,
+        walletId: wallet.id,
+        roundId: "stage5-round",
+        gameId: "stage5-game",
+        kind: "BET",
+        money: { amount: "1.00", currency: "BRL" },
+      },
+      randomUUID(),
+    );
+    const response = await fetch(`${baseUrl}/metrics`);
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/plain");
+    expect(body).toContain("# HELP wager_transactions_total");
+    expect(body).toContain('wager_transactions_total{status="PROCESSED"');
+    expect(body).toContain("# HELP wager_processing_duration_seconds");
+    expect(body).toContain("# HELP outbox_pending_messages");
+    expect(body).toContain("# HELP outbox_oldest_pending_age_seconds");
+    expect(body).toContain("# HELP sqs_dead_letter_queue_messages");
+    expect(body).toMatch(/sqs_dead_letter_queue_messages\{[^}]*\}\s+\d+/);
+  });
+
   test("worker-only module exposes health without the wager HTTP API", async () => {
     const workerApp = await NestFactory.create(WorkerModule, {
       logger: false,
@@ -524,6 +558,11 @@ describe.serial("Stage 4 / messaging workers", () => {
     try {
       const workerUrl = await workerApp.getUrl();
       expect((await fetch(`${workerUrl}/health/ready`)).status).toBe(200);
+      const metricsResponse = await fetch(`${workerUrl}/metrics`);
+      expect(metricsResponse.status).toBe(200);
+      expect(await metricsResponse.text()).toContain(
+        "# HELP wager_transactions_total",
+      );
       expect((await fetch(`${workerUrl}/wallets`)).status).toBe(404);
       expect(
         (
@@ -539,10 +578,59 @@ describe.serial("Stage 4 / messaging workers", () => {
     }
   });
 
+  test("HTTP correlation ID is returned and retained on Outbox events", async () => {
+    const wallet = await createWallet("50.00");
+    const correlationId = randomUUID();
+    const response = await fetch(`${baseUrl}/wagering/transactions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": randomUUID(),
+        "X-Correlation-Id": correlationId,
+      },
+      body: JSON.stringify({
+        providerId: "stage5-correlation-provider",
+        externalTransactionId: randomUUID(),
+        playerId: wallet.playerId,
+        walletId: wallet.id,
+        roundId: "stage5-correlation-round",
+        gameId: "stage5-correlation-game",
+        kind: "BET",
+        money: { amount: "5.00", currency: "BRL" },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-correlation-id")).toBe(correlationId);
+    const body = (await response.json()) as { transactionId: string };
+    const events = await execute<Array<{ correlation_id: string }>>(
+      `select payload->>'correlationId' as correlation_id
+       from outbox_messages
+       where aggregate_id = ?`,
+      [body.transactionId],
+    );
+    expect(events.length).toBeGreaterThan(0);
+    expect(
+      events.every((event) => event.correlation_id === correlationId),
+    ).toBe(true);
+    const generatedResponse = await fetch(`${baseUrl}/health/live`);
+    expect(generatedResponse.headers.get("x-correlation-id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    const invalidResponse = await fetch(`${baseUrl}/health/live`, {
+      headers: { "X-Correlation-Id": "not-a-uuid" },
+    });
+    expect(invalidResponse.headers.get("x-correlation-id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  });
+
   test("API, wager consumer, and outbox publisher run as separate processes", async () => {
     const wallet = await createWallet("100.00");
+    const correlationId = randomUUID();
     const envelope = wagerEnvelope(wallet.id, wallet.playerId, {
       amount: "5.00",
+      correlationId,
     });
     const apiPort = await allocatePort();
     const consumerPort = await allocatePort();
@@ -586,13 +674,17 @@ describe.serial("Stage 4 / messaging workers", () => {
       await wagerWorker.waitForMarker('"event":"wager_message_acknowledged"');
       expect((await wallets.get(wallet.id)).balance.toString()).toBe("95.00");
 
-      const events = await execute<Array<{ event_id: string }>>(
-        `select event_id from outbox_messages
+      const events = await execute<
+        Array<{ event_id: string; correlation_id: string }>
+      >(
+        `select event_id, payload->>'correlationId' as correlation_id
+         from outbox_messages
            where payload->'data'->>'externalTransactionId' = ?
              and event_type = 'WagerTransactionProcessed'`,
         [envelope.data.externalTransactionId],
       );
       expect(events).toHaveLength(1);
+      expect(events[0]!.correlation_id).toBe(correlationId);
       await waitForCondition(async () => {
         const rows = await execute<Array<{ status: string }>>(
           `select status from outbox_messages where event_id = ?`,
@@ -627,6 +719,106 @@ describe.serial("Stage 4 / messaging workers", () => {
       await Promise.all(
         [api, wagerWorker, outboxWorker].map((managed) => stopProcess(managed)),
       );
+    }
+  }, 60_000);
+
+  test("separate API processes serialize duplicate and competing wallet requests", async () => {
+    const wallet = await createWallet("100.00");
+    const firstPort = await allocatePort();
+    const firstApi = launch(
+      [join(process.cwd(), "src", "main.ts")],
+      workerEnvironment("api", firstPort),
+    );
+    let secondApi: ManagedProcess | undefined;
+    const submit = async (
+      port: number,
+      externalTransactionId: string,
+      idempotencyKey: string,
+      amount: string,
+    ) =>
+      fetch(`http://127.0.0.1:${port}/wagering/transactions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify({
+          providerId: "stage5-multiprocess-provider",
+          externalTransactionId,
+          playerId: wallet.playerId,
+          walletId: wallet.id,
+          roundId: "stage5-multiprocess-round",
+          gameId: "stage5-multiprocess-game",
+          kind: "BET",
+          money: { amount, currency: "BRL" },
+        }),
+      });
+
+    try {
+      await waitForReady(firstApi, firstPort);
+      const secondPort = await allocatePort();
+      secondApi = launch(
+        [join(process.cwd(), "src", "main.ts")],
+        workerEnvironment("api", secondPort),
+      );
+      await waitForReady(secondApi, secondPort);
+
+      const duplicateIdentity = randomUUID();
+      const duplicateKey = randomUUID();
+      const duplicateResponses = await Promise.all([
+        submit(firstPort, duplicateIdentity, duplicateKey, "1.00"),
+        submit(secondPort, duplicateIdentity, duplicateKey, "1.00"),
+      ]);
+      expect(duplicateResponses.map((response) => response.status)).toEqual([
+        200, 200,
+      ]);
+      const duplicateBodies = await Promise.all(
+        duplicateResponses.map((response) => response.json()),
+      );
+      expect(
+        duplicateBodies.filter(
+          (body) =>
+            typeof body === "object" &&
+            body !== null &&
+            "idempotentReplay" in body &&
+            body.idempotentReplay === true,
+        ),
+      ).toHaveLength(1);
+
+      const competingResponses = await Promise.all([
+        submit(firstPort, randomUUID(), randomUUID(), "80.00"),
+        submit(secondPort, randomUUID(), randomUUID(), "80.00"),
+      ]);
+      expect(
+        competingResponses.map((response) => response.status).sort(),
+      ).toEqual([200, 422]);
+      expect((await wallets.get(wallet.id)).balance.toString()).toBe("19.00");
+      const transactionCount = await execute<Array<{ count: string }>>(
+        `select count(*)::text as count
+         from wager_transactions
+         where provider_id = 'stage5-multiprocess-provider'`,
+      );
+      expect(transactionCount).toEqual([{ count: "3" }]);
+      const ledgerCount = await execute<Array<{ count: string }>>(
+        `select count(*)::text as count
+         from wallet_ledger_entries
+         where wallet_id = ?`,
+        [wallet.id],
+      );
+      expect(ledgerCount).toEqual([{ count: "3" }]);
+      const reconstructedBalance = await execute<Array<{ balance: string }>>(
+        `select coalesce(
+           sum(case when direction = 'CREDIT' then amount else -amount end),
+           0
+         )::text as balance
+         from wallet_ledger_entries
+         where wallet_id = ?`,
+        [wallet.id],
+      );
+      expect(reconstructedBalance).toEqual([{ balance: "19.00" }]);
+    } finally {
+      await stopProcess(firstApi);
+      if (secondApi) await stopProcess(secondApi);
     }
   }, 60_000);
 
@@ -1118,6 +1310,27 @@ describe.serial("Stage 4 / messaging workers", () => {
     expect(deadLetter).toHaveLength(1);
     expect(JSON.parse(deadLetter[0]!.body)).toEqual(conflict);
     expect((await wallets.get(wallet.id)).balance.toString()).toBe("15.00");
+  });
+
+  test("SQS messages without a correlation ID receive a generated Outbox ID", async () => {
+    const wallet = await createWallet("20.00");
+    const envelope = wagerEnvelope(wallet.id, wallet.playerId, {
+      correlationId: null,
+    });
+    await send(JSON.stringify(envelope), wallet.id);
+    await consumer.pollOnce();
+
+    const events = await execute<Array<{ correlation_id: string }>>(
+      `select payload->>'correlationId' as correlation_id
+       from outbox_messages
+       where payload->'data'->>'externalTransactionId' = ?
+         and event_type = 'WagerTransactionProcessed'`,
+      [envelope.data.externalTransactionId],
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.correlation_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
   });
 
   test("Outbox publisher leases and publishes durable events", async () => {

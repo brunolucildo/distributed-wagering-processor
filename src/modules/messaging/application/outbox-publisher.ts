@@ -3,11 +3,23 @@ import { Logger } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { loadEnvironment } from "../../../config/environment";
 import { SqsQueueClient } from "../infrastructure/sqs-queue-client";
+import { MetricsService } from "../../metrics/metrics.service";
+import {
+  correlationIdFromPayload,
+  currentCorrelationId,
+  runWithCorrelation,
+} from "../../../observability/correlation-context";
 
 interface OutboxMessage {
   event_id: string;
   aggregate_id: string;
   payload: Record<string, unknown>;
+}
+
+interface OutboxLogIdentifiers {
+  transactionId?: string;
+  walletId?: string;
+  providerId?: string;
 }
 
 export class OutboxPublisher {
@@ -19,6 +31,7 @@ export class OutboxPublisher {
   constructor(
     private readonly orm: MikroORM,
     private readonly sqs: SqsQueueClient,
+    private readonly metrics = new MetricsService(),
   ) {}
 
   async run(): Promise<void> {
@@ -46,17 +59,22 @@ export class OutboxPublisher {
   async publishBatch(): Promise<number> {
     const messages = await this.claimBatch();
     for (const message of messages) {
-      try {
-        await this.sqs.publishEvent(
-          this.environment.SQS_EVENTS_QUEUE,
-          message.event_id,
-          message.aggregate_id,
-          JSON.stringify(message.payload),
-        );
-        await this.markPublished(message.event_id);
-      } catch (error) {
-        await this.markFailed(message.event_id, error);
-      }
+      const correlationId =
+        correlationIdFromPayload(message.payload) ?? randomUUID();
+      const identifiers = this.logIdentifiers(message.payload);
+      await runWithCorrelation(correlationId, async () => {
+        try {
+          await this.sqs.publishEvent(
+            this.environment.SQS_EVENTS_QUEUE,
+            message.event_id,
+            message.aggregate_id,
+            JSON.stringify(message.payload),
+          );
+          await this.markPublished(message.event_id, identifiers);
+        } catch (error) {
+          await this.markFailed(message.event_id, error, identifiers);
+        }
+      });
     }
     return messages.length;
   }
@@ -102,7 +120,10 @@ export class OutboxPublisher {
     );
   }
 
-  private async markPublished(eventId: string): Promise<void> {
+  private async markPublished(
+    eventId: string,
+    identifiers: OutboxLogIdentifiers,
+  ): Promise<void> {
     const updated = await this.orm.em
       .fork()
       .execute<Array<{ event_id: string }>>(
@@ -118,12 +139,18 @@ export class OutboxPublisher {
         JSON.stringify({
           event: "outbox_lease_lost_after_publish",
           eventId,
+          correlationId: currentCorrelationId(),
+          ...identifiers,
         }),
       );
     }
   }
 
-  private async markFailed(eventId: string, error: unknown): Promise<void> {
+  private async markFailed(
+    eventId: string,
+    error: unknown,
+    identifiers: OutboxLogIdentifiers,
+  ): Promise<void> {
     const rows = await this.orm.em.fork().execute<Array<{ attempts: number }>>(
       `select attempts from outbox_messages
        where event_id = ? and status = 'PROCESSING' and lease_owner = ?`,
@@ -132,7 +159,12 @@ export class OutboxPublisher {
     const currentAttempt = rows[0]?.attempts;
     if (currentAttempt === undefined) {
       this.logger.warn(
-        JSON.stringify({ event: "outbox_lease_lost_after_failure", eventId }),
+        JSON.stringify({
+          event: "outbox_lease_lost_after_failure",
+          eventId,
+          correlationId: currentCorrelationId(),
+          ...identifiers,
+        }),
       );
       return;
     }
@@ -144,28 +176,64 @@ export class OutboxPublisher {
       Math.round(baseDelay * (0.5 + Math.random())),
     );
     const errorType = error instanceof Error ? error.name : "UnknownError";
-    await this.orm.em.fork().execute(
-      `update outbox_messages
+    const updated = await this.orm.em
+      .fork()
+      .execute<Array<{ event_id: string }>>(
+        `update outbox_messages
        set status = ?, attempts = ?, next_attempt_at = now() + (? * interval '1 millisecond'),
            lease_owner = null, lease_expires_at = null, last_error = ?
-       where event_id = ? and status = 'PROCESSING' and lease_owner = ?`,
-      [
-        terminal ? "FAILED" : "PENDING",
-        attempts,
-        delay,
-        errorType.slice(0, 100),
-        eventId,
-        this.leaseOwner,
-      ],
-    );
+       where event_id = ? and status = 'PROCESSING' and lease_owner = ?
+       returning event_id`,
+        [
+          terminal ? "FAILED" : "PENDING",
+          attempts,
+          delay,
+          errorType.slice(0, 100),
+          eventId,
+          this.leaseOwner,
+        ],
+      );
+    if (updated.length === 0) {
+      this.logger.warn(
+        JSON.stringify({
+          event: "outbox_lease_lost_after_failure",
+          eventId,
+          correlationId: currentCorrelationId(),
+          ...identifiers,
+        }),
+      );
+      return;
+    }
+    this.metrics.recordRetry("outbox");
     this.logger.error(
       JSON.stringify({
         event: terminal ? "outbox_publish_exhausted" : "outbox_publish_retry",
+        correlationId: currentCorrelationId(),
+        eventId,
+        ...identifiers,
         attempts,
         errorType,
-        eventId,
         nextAttemptDelayMs: terminal ? null : delay,
       }),
     );
+  }
+
+  private logIdentifiers(
+    payload: Record<string, unknown>,
+  ): OutboxLogIdentifiers {
+    const data = payload.data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+    const record = data as Record<string, unknown>;
+    return {
+      ...(typeof record.transactionId === "string"
+        ? { transactionId: record.transactionId }
+        : {}),
+      ...(typeof record.walletId === "string"
+        ? { walletId: record.walletId }
+        : {}),
+      ...(typeof record.providerId === "string"
+        ? { providerId: record.providerId }
+        : {}),
+    };
   }
 }

@@ -3,9 +3,14 @@ info:
   title: Distributed Wagering Processor API
   version: 0.1.0
   description: |
-    HTTP contract for wallet and wagering operations. Provider IDs in requests
-    are business identifiers, not authentication credentials. Authentication is
-    not implemented. Wager retries must reuse the same Idempotency-Key.
+    HTTP contract for wallet, wagering, health, and operational metrics.
+    Requests may supply an optional UUID in X-Correlation-Id; invalid or absent
+    values are replaced with a generated UUID. All HTTP responses include the
+    effective value in the X-Correlation-Id header.
+    Provider IDs in requests are business identifiers, not authentication
+    credentials. The ProviderIdentityPort currently uses an unconfigured
+    adapter, so authentication is not enabled. Wager retries must reuse the
+    same Idempotency-Key.
 servers:
   - url: http://localhost:3000
 paths:
@@ -245,6 +250,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Readiness"
+  /metrics:
+    get:
+      operationId: getPrometheusMetrics
+      summary: Export process and dependency metrics
+      responses:
+        "200":
+          description: Prometheus text exposition for this application process.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "500":
+          description: A PostgreSQL or SQS metrics query failed.
 components:
   parameters:
     WalletId:

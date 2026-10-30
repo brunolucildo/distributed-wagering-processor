@@ -10,6 +10,9 @@ import {
 } from "@nestjs/common";
 import { z } from "zod";
 import { WagerApplicationService } from "../../application/wager-application-service";
+import { ProviderIdentityPort } from "../../../providers/provider-identity.port";
+import { assertProviderAccess } from "../../../providers/provider-identity-access";
+import { currentCorrelationId } from "../../../../observability/correlation-context";
 
 const Identifier = z.string().trim().min(1).max(200);
 const SubmitWagerSchema = z
@@ -45,16 +48,29 @@ export class WagerController {
   constructor(
     @Inject(WagerApplicationService)
     private readonly wagers: WagerApplicationService,
+    @Inject(ProviderIdentityPort)
+    private readonly providerIdentity: ProviderIdentityPort,
   ) {}
 
   @Post()
   async submit(
     @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Headers("authorization") authorizationHeader: string | undefined,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
   ) {
     const input = SubmitWagerSchema.parse(body);
-    const result = await this.wagers.submit(input, idempotencyKey);
+    await assertProviderAccess(
+      this.providerIdentity,
+      input.providerId,
+      authorizationHeader,
+    );
+    const result = await this.wagers.submit(
+      input,
+      idempotencyKey,
+      undefined,
+      currentCorrelationId(),
+    );
     response.status(result.httpStatus);
     return result.body;
   }
@@ -70,15 +86,24 @@ export class ProviderWagerController {
   constructor(
     @Inject(WagerApplicationService)
     private readonly wagers: WagerApplicationService,
+    @Inject(ProviderIdentityPort)
+    private readonly providerIdentity: ProviderIdentityPort,
   ) {}
 
   @Get(":providerId/wagering/transactions/:externalTransactionId")
-  findByExternalIdentity(
+  async findByExternalIdentity(
+    @Headers("authorization") authorizationHeader: string | undefined,
     @Param("providerId") providerId: string,
     @Param("externalTransactionId") externalTransactionId: string,
   ) {
+    const parsedProviderId = TransactionIdentitySchema.parse(providerId);
+    await assertProviderAccess(
+      this.providerIdentity,
+      parsedProviderId,
+      authorizationHeader,
+    );
     return this.wagers.findByExternalIdentity(
-      TransactionIdentitySchema.parse(providerId),
+      parsedProviderId,
       TransactionIdentitySchema.parse(externalTransactionId),
     );
   }

@@ -1,6 +1,6 @@
 # Agent-Assisted Development Workflow
 
-**Status:** Workspace agents available; Stage 0–2 execution recorded below
+**Status:** Workspace agents available; Stage 0–5 execution recorded below. Stage 0's visual VS Code agent-picker confirmation remains unverified.
 **Purpose:** Demonstrate practical creation and orchestration of project-specific coding agents while keeping financial correctness and delivery accountability explicit.
 
 ## 1. Scope
@@ -26,14 +26,14 @@ The human developer remains accountable for design decisions, integration, test 
 
 ## 3. Planned use by roadmap stage
 
-| Stage | Agent activity | Orchestrator responsibility |
-|---|---|---|
-| 0 — Foundation | Create and validate the three reusable workspace agent definitions; no code implementation is delegated yet. | Confirm each agent's scope, tool permissions, and frontmatter; keep these agents out of runtime and production dependencies. |
-| 1 — Domain | Assign the domain engineer a bounded domain slice; after its contract is stable, assign independent unit-test coverage to the test engineer. | Resolve domain decisions, prevent overlapping edits, run unit tests, and check monetary handling for forbidden numeric conversions. |
-| 2 — Persistence | Assign schema/migration work as a bounded task; assign integration tests only after the schema contract is agreed. | Verify database-level constraints, migration reversibility, ledger immutability, and real PostgreSQL test results. |
-| 3 — API and idempotency | Use implementation and test tasks sequentially or on disjoint files after request/response contracts are fixed. | Verify race behavior, replay snapshots, payload conflicts, and API error mapping. |
+| Stage                      | Agent activity                                                                                                                                      | Orchestrator responsibility                                                                                                          |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| 0 — Foundation             | Create and validate the three reusable workspace agent definitions; no code implementation is delegated yet.                                        | Confirm each agent's scope, tool permissions, and frontmatter; keep these agents out of runtime and production dependencies.         |
+| 1 — Domain                 | Assign the domain engineer a bounded domain slice; after its contract is stable, assign independent unit-test coverage to the test engineer.        | Resolve domain decisions, prevent overlapping edits, run unit tests, and check monetary handling for forbidden numeric conversions.  |
+| 2 — Persistence            | Assign schema/migration work as a bounded task; assign integration tests only after the schema contract is agreed.                                  | Verify database-level constraints, migration reversibility, ledger immutability, and real PostgreSQL test results.                   |
+| 3 — API and idempotency    | Use implementation and test tasks sequentially or on disjoint files after request/response contracts are fixed.                                     | Verify race behavior, replay snapshots, payload conflicts, and API error mapping.                                                    |
 | 4 — Messaging and recovery | Delegate consumer and outbox work only after their shared transaction and event contracts are stable; keep ownership of overlapping files separate. | Verify commit-before-ack, redelivery, duplicate publication, reference recovery, and multi-process behavior using integration tests. |
-| 5 — Handoff | Request a read-only reliability review of the completed diff and requirements coverage. | Triage findings, make any required fixes, execute the final suite, and document verified results and limitations. |
+| 5 — Handoff                | Request a read-only reliability review of the completed diff and requirements coverage.                                                             | Triage findings, make any required fixes, execute the final suite, and document verified results and limitations.                    |
 
 Agent use is selective: if a stage has no independent bounded work, implement it directly rather than manufacturing parallel tasks.
 
@@ -71,3 +71,14 @@ Integration review added strict processed-reversal reference and permanent-failu
 Actual verification: 92 tests / 268 assertions, including 20 real PostgreSQL integration tests; lint, type-check, build, and formatting passed. The initial migration was applied to the development database and a repeated `up` made no changes. The compiled migration runner and compiled API liveness/missing-wallet query also passed. No persistent wagering pipeline, SQS delivery guarantees, or multi-process financial concurrency were claimed.
 
 The later 2026-10-29 conformance audit and corrections were performed directly, without invoking additional agents. Independent probes found the database `NaN` and pre-controller JSON error-envelope gaps recorded in specs 01–02. Both gaps are now corrected and regression-tested: 103 tests / 309 assertions pass, including 31 PostgreSQL integration tests, along with lint, type-check, build and formatting. The new corrective migration leaves the initial migration unchanged; the existing HTTP filter is registered globally. No additional visual VS Code agent-selection check was performed, and future-stage guarantees remain unclaimed.
+
+### Stage 5 execution
+
+The Reliability Reviewer performed a bounded, read-only review of the integrated Stage 5 changes and reported two low-severity findings:
+
+- Outbox retry metrics could count a retry even when a publisher had lost its lease before persisting the retry. The orchestrator changed the lease-owned update to return the affected event ID and only records the retry after that update succeeds. The reviewer independently confirmed the correction.
+- The multi-process API race test could allocate the second API's port while the first process had not yet bound its port. The test now waits for the first API readiness before allocating the second port. The reviewer independently confirmed the correction.
+
+The orchestrator directly implemented and tested correlation propagation, rather than delegating this continuous cross-cutting change: HTTP middleware validates or generates UUIDs and returns the effective ID; SQS accepts an optional correlation UUID and generates one when absent; the wager application service retains it on Outbox events; pending-reference recovery reuses the initial event's ID; publisher, consumer, recovery, and HTTP error logs include the ID where available; DLQ routing includes it as a message attribute. Integration tests cover custom HTTP IDs, generated HTTP IDs, supplied SQS IDs across separate processes, missing SQS IDs, and recovery.
+
+Final verification used a Linux Bun 1.4.4 container against PostgreSQL and LocalStack. The full suite passed **144 tests / 516 assertions**, including the POSIX shutdown-timeout test. Lint, source/test formatting, documentation formatting, type-check, and build passed. Authentication remains intentionally disabled. The visual Stage 0 VS Code agent-picker check is not claimed as verified; it requires a visual check in the target VS Code Chat workflow.

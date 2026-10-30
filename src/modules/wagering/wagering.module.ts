@@ -4,9 +4,10 @@ import {
   ProviderWagerController,
   WagerController,
 } from "./presentation/http/wager.controller";
+import { ProviderIdentityModule } from "../providers/provider-identity.module";
 
 @Module({
-  imports: [WagerApplicationModule],
+  imports: [WagerApplicationModule, ProviderIdentityModule],
   controllers: [WagerController, ProviderWagerController],
   exports: [WagerApplicationModule],
 })

@@ -1,6 +1,6 @@
 # 03 — Messaging and Recovery
 
-**Status:** Stage 4 behavior is covered by PostgreSQL/LocalStack integration tests, including three independent application processes, two publisher processes, process-kill recovery at the commit/ACK and publish/confirm boundaries, and source-to-DLQ redrive. Shutdown-timeout fault injection remains unverified on Windows; its integration test is skipped there because SIGTERM delivery is not catchable.
+**Status:** Stage 4 behavior is covered by PostgreSQL/LocalStack integration tests, including three independent application processes, two publisher processes, process-kill recovery at the commit/ACK and publish/confirm boundaries, and source-to-DLQ redrive. POSIX shutdown-timeout fault injection passed in Linux CI; the test is skipped on Windows because SIGTERM delivery is not catchable there.
 **Broker:** AWS SQS API via LocalStack in local development.
 
 ## 1. Queues and message contracts
@@ -8,9 +8,10 @@
 - Provision `wager-transactions.fifo` and `wager-transactions-dlq.fifo`; configure the source queue redrive policy for five receives before DLQ transfer.
 - Set `MessageGroupId` to `walletId` and `MessageDeduplicationId` to the stable incoming `messageId`. FIFO deduplication is an optimization only; PostgreSQL remains the correctness boundary.
 - Validate envelope version, message ID, type, timestamp, and business payload before processing. Reject `OPENING` from the external message contract.
-- The incoming envelope is `WagerTransactionRequested`: `{ messageId, type, version: 1, occurredAt, data }`; `data` contains the wager submission fields plus `idempotencyKey`.
+- The incoming envelope is `WagerTransactionRequested`: `{ messageId, correlationId?, type, version: 1, occurredAt, data }`; optional `correlationId` must be a UUID. The consumer generates one when absent. `data` contains the wager submission fields plus `idempotencyKey`.
 - Queue handlers and HTTP controllers invoke the same application use case.
 - Outbox events are published to a configured FIFO integration-events queue. The event envelope includes event ID/type/version, aggregate ID, correlation ID, optional causation ID, occurred time, and JSON-safe data. Money values are strings.
+- The correlation ID is preserved from the HTTP request or SQS envelope through Outbox events, pending-reference recovery, structured processing logs, and DLQ message attributes.
 
 ## 2. Inbox and consumer behavior
 
