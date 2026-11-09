@@ -24,6 +24,12 @@ const ISO_CURRENCY_CODES = new Set([
   ...SPECIAL_ISO_CURRENCIES,
 ]);
 
+/** Wire representation of a monetary value: decimal string plus ISO currency. */
+export interface MoneyProps {
+  amount: string;
+  currency: string;
+}
+
 /**
  * An exact, two-decimal monetary value stored as integer minor units.
  */
@@ -33,6 +39,11 @@ export class Money {
     public readonly currency: string,
   ) {
     Object.freeze(this);
+  }
+
+  /** Validates and builds a value from its wire representation. */
+  static from(props: MoneyProps): Money {
+    return Money.parse(props.amount, props.currency);
   }
 
   static parse(amount: string, currency: string): Money {
@@ -110,8 +121,8 @@ export class Money {
     return `${negative ? "-" : ""}${whole.toString()}.${fractional}`;
   }
 
-  toJSON(): string {
-    return this.toString();
+  toJSON(): MoneyProps {
+    return { amount: this.toString(), currency: this.currency };
   }
 
   private assertSameCurrency(other: Money): void {

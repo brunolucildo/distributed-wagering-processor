@@ -12,7 +12,7 @@ type Submission = {
   transactionId: string;
   status: string;
   failureCode?: string;
-  walletBalance: string;
+  balance: { amount: string; currency: string };
   idempotentReplay: boolean;
 };
 
@@ -148,7 +148,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       status: "PROCESSED",
-      walletBalance: "70.00",
+      balance: { amount: "70.00", currency: "BRL" },
       idempotentReplay: false,
     });
     expect(await wallets.get(wallet.id)).toMatchObject({
@@ -189,14 +189,19 @@ describe("Stage 3 / wagering API and idempotency", () => {
       }),
       "snapshot-win-key",
     );
-    expect(later.body).toMatchObject({ walletBalance: "47.00" });
+    expect(later.body).toMatchObject({
+      balance: { amount: "47.00", currency: "BRL" },
+    });
     const replay = await submit(request, "snapshot-key");
     expect(replay.status).toBe(first.status);
     expect(replay.body).toEqual({
       ...(first.body as Submission),
       idempotentReplay: true,
     });
-    expect((replay.body as Submission).walletBalance).toBe("40.00");
+    expect((replay.body as Submission).balance).toEqual({
+      amount: "40.00",
+      currency: "BRL",
+    });
   });
 
   test("same key with changed payload and same external ID with a new key conflict", async () => {
@@ -259,7 +264,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
     expect(loss.status).toBe(200);
     expect(loss.body).toMatchObject({
       status: "PROCESSED",
-      walletBalance: "100.00",
+      balance: { amount: "100.00", currency: "BRL" },
     });
     expect(await wallets.get(wallet.id).then((value) => value.version)).toBe(1);
 
@@ -287,7 +292,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
           }),
         )
       ).body,
-    ).toMatchObject({ walletBalance: "100.00" });
+    ).toMatchObject({ balance: { amount: "100.00", currency: "BRL" } });
     expect(
       (
         await submit(
@@ -300,7 +305,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
           }),
         )
       ).body,
-    ).toMatchObject({ walletBalance: "90.00" });
+    ).toMatchObject({ balance: { amount: "90.00", currency: "BRL" } });
     const winId = "rules-win";
     expect(
       (
@@ -314,7 +319,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
           }),
         )
       ).body,
-    ).toMatchObject({ walletBalance: "97.00" });
+    ).toMatchObject({ balance: { amount: "97.00", currency: "BRL" } });
     expect(
       (
         await submit(
@@ -327,7 +332,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
           }),
         )
       ).body,
-    ).toMatchObject({ walletBalance: "90.00" });
+    ).toMatchObject({ balance: { amount: "90.00", currency: "BRL" } });
     expect((await wallets.get(wallet.id)).balance.toString()).toBe("90.00");
     expect(await serviceLedgerCount(wallet.id)).toBe(6);
   });
@@ -350,7 +355,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
     expect(response.status).toBe(202);
     expect(response.body).toMatchObject({
       status: "PENDING_REFERENCE",
-      walletBalance: "0.00",
+      balance: { amount: "0.00", currency: "BRL" },
     });
     const rows = await execute<
       {
@@ -391,7 +396,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
     expect(response.body).toMatchObject({
       status: "REJECTED",
       failureCode: "INSUFFICIENT_FUNDS",
-      walletBalance: "0.00",
+      balance: { amount: "0.00", currency: "BRL" },
     });
     const replay = await submit(request, "insufficient-key");
     expect(replay.status).toBe(422);
@@ -421,7 +426,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
     expect(response.body).toMatchObject({
       status: "REJECTED",
       failureCode: "CURRENCY_MISMATCH",
-      walletBalance: "20.00",
+      balance: { amount: "20.00", currency: "BRL" },
     });
     expect((await wallets.get(wallet.id)).version).toBe(1);
     expect(await serviceLedgerCount(wallet.id)).toBe(1);
@@ -519,7 +524,7 @@ describe("Stage 3 / wagering API and idempotency", () => {
       externalTransactionId,
       status: "PROCESSED",
       amount: "1.00",
-      walletBalance: "0.00",
+      balance: { amount: "0.00", currency: "BRL" },
     });
     expect(idView).not.toHaveProperty("responseSnapshot");
     const byExternal = await fetch(

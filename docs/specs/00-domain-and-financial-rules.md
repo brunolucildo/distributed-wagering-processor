@@ -27,26 +27,26 @@ Kinds: `OPENING`, `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`. `OPENING` is inter
 
 Statuses:
 
-| Status | Meaning | Terminal |
-|---|---|---|
-| `PENDING` | Accepted and ready to apply | No |
-| `PENDING_REFERENCE` | Waiting for the referenced operation | No |
-| `PROCESSED` | Applied or recorded as a no-balance result | Yes |
-| `REJECTED` | Permanent domain/business rule rejection | Yes |
-| `FAILED` | Permanent processing failure that cannot be retried | Yes |
+| Status              | Meaning                                             | Terminal |
+| ------------------- | --------------------------------------------------- | -------- |
+| `PENDING`           | Accepted and ready to apply                         | No       |
+| `PENDING_REFERENCE` | Waiting for the referenced operation                | No       |
+| `PROCESSED`         | Applied or recorded as a no-balance result          | Yes      |
+| `REJECTED`          | Permanent domain/business rule rejection            | Yes      |
+| `FAILED`            | Permanent processing failure that cannot be retried | Yes      |
 
 Allowed transitions:
 
-| From | To | Condition |
-|---|---|---|
-| New | `PENDING` | Valid operation with no unresolved required reference |
-| New | `PENDING_REFERENCE` | A required or supplied reference does not yet exist |
-| `PENDING` | `PROCESSED` | Domain operation succeeds |
-| `PENDING` | `REJECTED` | A business rule fails |
-| `PENDING` | `PENDING_REFERENCE` | A required or supplied reference is not available at processing time |
-| `PENDING_REFERENCE` | `PROCESSED` | Reference appears and all rules succeed |
-| `PENDING_REFERENCE` | `REJECTED` | Reference expires or a resolved reference violates a business rule |
-| Non-terminal | `FAILED` | Only for a permanent, transaction-specific processing failure classified as non-retryable |
+| From                | To                  | Condition                                                                                 |
+| ------------------- | ------------------- | ----------------------------------------------------------------------------------------- |
+| New                 | `PENDING`           | Valid operation with no unresolved required reference                                     |
+| New                 | `PENDING_REFERENCE` | A required or supplied reference does not yet exist                                       |
+| `PENDING`           | `PROCESSED`         | Domain operation succeeds                                                                 |
+| `PENDING`           | `REJECTED`          | A business rule fails                                                                     |
+| `PENDING`           | `PENDING_REFERENCE` | A required or supplied reference is not available at processing time                      |
+| `PENDING_REFERENCE` | `PROCESSED`         | Reference appears and all rules succeed                                                   |
+| `PENDING_REFERENCE` | `REJECTED`          | Reference expires or a resolved reference violates a business rule                        |
+| Non-terminal        | `FAILED`            | Only for a permanent, transaction-specific processing failure classified as non-retryable |
 
 All terminal states are immutable. Transitions not listed above are programming errors. `FAILED` is not a label for exhausted retries: transient infrastructure errors MUST NOT be persisted as `FAILED`, and retry exhaustion alone does not make an error permanent. A permanent failure must be durably recorded when the database is available.
 
@@ -56,12 +56,12 @@ The external transaction identity is `(providerId, externalTransactionId)`. An i
 
 ## 4. Operation rules
 
-| Kind | Balance effect | Ledger |
-|---|---|---|
-| `BET` | Debit wager amount; insufficient funds reject | One debit |
-| `WIN` | Credit wager amount | One credit |
-| `LOSS` | No change | None |
-| `REFUND` | Credit the referenced bet amount | One credit |
+| Kind       | Balance effect                                      | Ledger                                      |
+| ---------- | --------------------------------------------------- | ------------------------------------------- |
+| `BET`      | Debit wager amount; insufficient funds reject       | One debit                                   |
+| `WIN`      | Credit wager amount                                 | One credit                                  |
+| `LOSS`     | No change                                           | None                                        |
+| `REFUND`   | Credit the referenced bet amount                    | One credit                                  |
 | `ROLLBACK` | Apply the exact inverse of the referenced operation | One entry if the reference affected balance |
 
 - `REFUND` and `ROLLBACK` require `referenceExternalTransactionId`.

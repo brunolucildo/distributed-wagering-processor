@@ -339,6 +339,26 @@ components:
       pattern: "^[A-Z]{3}$"
       description: Valid uppercase ISO-4217 alpha code.
       examples: [BRL]
+    Money:
+      type: object
+      additionalProperties: false
+      required: [amount, currency]
+      description: Monetary value as an exact decimal string plus ISO-4217 currency.
+      properties:
+        amount:
+          $ref: "#/components/schemas/MoneyAmount"
+        currency:
+          $ref: "#/components/schemas/Currency"
+    SignedMoney:
+      type: object
+      required: [amount, currency]
+      description: Like Money, but the amount may be negative (reconciliation difference).
+      properties:
+        amount:
+          type: string
+          pattern: "^-?\\d+\\.\\d{2}$"
+        currency:
+          $ref: "#/components/schemas/Currency"
     Error:
       type: object
       required: [code, message]
@@ -350,27 +370,23 @@ components:
     CreateWallet:
       type: object
       additionalProperties: false
-      required: [playerId, currency, openingBalance]
+      required: [playerId, initialBalance]
       properties:
         playerId:
           $ref: "#/components/schemas/Identifier"
-        currency:
-          $ref: "#/components/schemas/Currency"
-        openingBalance:
-          $ref: "#/components/schemas/MoneyAmount"
+        initialBalance:
+          $ref: "#/components/schemas/Money"
     Wallet:
       type: object
-      required: [id, playerId, currency, balance, version]
+      required: [id, playerId, balance, version]
       properties:
         id:
           type: string
           format: uuid
         playerId:
           $ref: "#/components/schemas/Identifier"
-        currency:
-          $ref: "#/components/schemas/Currency"
         balance:
-          $ref: "#/components/schemas/MoneyAmount"
+          $ref: "#/components/schemas/Money"
         version:
           type: integer
           minimum: 1
@@ -437,7 +453,7 @@ components:
         - REFERENCE_ALREADY_REVERSED
     WagerSubmissionResult:
       type: object
-      required: [transactionId, status, walletBalance, idempotentReplay]
+      required: [transactionId, status, balance, idempotentReplay]
       properties:
         transactionId:
           type: string
@@ -446,8 +462,8 @@ components:
           $ref: "#/components/schemas/WagerStatus"
         failureCode:
           $ref: "#/components/schemas/WagerFailureCode"
-        walletBalance:
-          $ref: "#/components/schemas/MoneyAmount"
+        balance:
+          $ref: "#/components/schemas/Money"
         idempotentReplay:
           type: boolean
     WagerTransaction:
@@ -467,7 +483,7 @@ components:
           referenceExternalTransactionId,
           status,
           failureCode,
-          walletBalance,
+          balance,
           createdAt,
           completedAt,
         ]
@@ -504,9 +520,9 @@ components:
           oneOf:
             - $ref: "#/components/schemas/WagerFailureCode"
             - type: "null"
-        walletBalance:
+        balance:
           oneOf:
-            - $ref: "#/components/schemas/MoneyAmount"
+            - $ref: "#/components/schemas/Money"
             - type: "null"
         createdAt:
           type: string
@@ -569,7 +585,6 @@ components:
       required:
         [
           walletId,
-          currency,
           storedBalance,
           calculatedBalance,
           difference,
@@ -580,14 +595,12 @@ components:
         walletId:
           type: string
           format: uuid
-        currency:
-          $ref: "#/components/schemas/Currency"
         storedBalance:
-          $ref: "#/components/schemas/MoneyAmount"
+          $ref: "#/components/schemas/Money"
         calculatedBalance:
-          $ref: "#/components/schemas/MoneyAmount"
+          $ref: "#/components/schemas/Money"
         difference:
-          $ref: "#/components/schemas/MoneyAmount"
+          $ref: "#/components/schemas/SignedMoney"
         consistent:
           type: boolean
         checkedEntries:

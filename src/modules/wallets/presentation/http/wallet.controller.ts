@@ -10,17 +10,23 @@ import {
 } from "@nestjs/common";
 import { z } from "zod";
 import { WalletService } from "../../application/wallet-service";
+import type { Wallet } from "../../domain/entities/wallet";
 import { ReconciliationMonitor } from "./reconciliation-monitor";
 
 const WalletIdSchema = z.string().uuid();
-const CreateWalletSchema = z
+const MoneyPropsSchema = z
   .object({
-    playerId: z.string().trim().min(1).max(200),
-    currency: z.string().regex(/^[A-Z]{3}$/),
-    openingBalance: z
+    amount: z
       .string()
       .max(100)
       .regex(/^\d+\.\d{2}$/),
+    currency: z.string().regex(/^[A-Z]{3}$/),
+  })
+  .strict();
+const CreateWalletSchema = z
+  .object({
+    playerId: z.string().trim().min(1).max(200),
+    initialBalance: MoneyPropsSchema,
   })
   .strict();
 const LedgerQuerySchema = z
@@ -44,13 +50,21 @@ export class WalletController {
   ) {}
 
   @Post()
-  create(@Body() body: unknown) {
-    return this.wallets.create(CreateWalletSchema.parse(body));
+  async create(@Body() body: unknown) {
+    const input = CreateWalletSchema.parse(body);
+    const wallet = await this.wallets.create({
+      playerId: input.playerId,
+      currency: input.initialBalance.currency,
+      openingBalance: input.initialBalance.amount,
+    });
+    return walletResponse(wallet);
   }
 
   @Get(":walletId")
-  get(@Param("walletId") walletId: string) {
-    return this.wallets.get(WalletIdSchema.parse(walletId));
+  async get(@Param("walletId") walletId: string) {
+    return walletResponse(
+      await this.wallets.get(WalletIdSchema.parse(walletId)),
+    );
   }
 
   @Get(":walletId/ledger")
@@ -80,6 +94,28 @@ export class WalletController {
   async reconcile(@Param("walletId") walletId: string) {
     const result = await this.wallets.reconcile(WalletIdSchema.parse(walletId));
     this.monitor.record(result);
-    return result;
+    return {
+      walletId: result.walletId,
+      storedBalance: {
+        amount: result.storedBalance,
+        currency: result.currency,
+      },
+      calculatedBalance: {
+        amount: result.calculatedBalance,
+        currency: result.currency,
+      },
+      difference: { amount: result.difference, currency: result.currency },
+      consistent: result.consistent,
+      checkedEntries: result.checkedEntries,
+    };
   }
+}
+
+function walletResponse(wallet: Wallet) {
+  return {
+    id: wallet.id,
+    playerId: wallet.playerId,
+    balance: wallet.balance.toJSON(),
+    version: wallet.version,
+  };
 }

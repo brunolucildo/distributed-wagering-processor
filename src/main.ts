@@ -4,6 +4,7 @@ import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { loadEnvironment } from "./config/environment";
 import { WorkerModule } from "./worker.module";
+import { JsonLogger } from "./observability/json-logger";
 import { OutboxPublisher } from "./modules/messaging/application/outbox-publisher";
 import { PendingReferenceReprocessor } from "./modules/messaging/application/pending-reference-reprocessor";
 import { SqsWagerConsumer } from "./modules/messaging/application/sqs-wager-consumer";
@@ -12,7 +13,9 @@ async function bootstrap(): Promise<void> {
   const environment = loadEnvironment();
   const servesApi =
     environment.WORKER_ROLE === "api" || environment.WORKER_ROLE === "all";
-  const app = await NestFactory.create(servesApi ? AppModule : WorkerModule);
+  const app = await NestFactory.create(servesApi ? AppModule : WorkerModule, {
+    logger: new JsonLogger(),
+  });
   const consumer = app.get(SqsWagerConsumer);
   const publisher = app.get(OutboxPublisher);
   const reprocessor = app.get(PendingReferenceReprocessor);

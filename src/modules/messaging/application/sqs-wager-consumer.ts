@@ -7,6 +7,7 @@ import { WagerApplicationService } from "../../wagering/application/wager-applic
 import { MikroORM } from "@mikro-orm/postgresql";
 import { loadEnvironment } from "../../../config/environment";
 import { SqsQueueClient } from "../infrastructure/sqs-queue-client";
+import { InboxMessage } from "../domain/inbox-message";
 import { z } from "zod";
 import { MetricsService } from "../../metrics/metrics.service";
 import type { WagerStatus } from "../../wagering/domain/entities/wager-transaction";
@@ -16,6 +17,7 @@ import {
   runWithCorrelation,
 } from "../../../observability/correlation-context";
 
+const INBOX_CONSUMER = "wager-sqs-v1";
 const Identifier = z.string().trim().min(1).max(200);
 const EnvelopeIdentitySchema = z
   .object({ messageId: Identifier })
@@ -188,36 +190,48 @@ export class SqsWagerConsumer {
           (consumer_name, message_id, payload_hash, status, attempts, payload, received_at)
          values (?, ?, ?, 'PROCESSING', 0, ?::jsonb, now())
          on conflict (consumer_name, message_id) do nothing`,
-        ["wager-sqs-v1", messageId, payloadHash, JSON.stringify(payload)],
+        [INBOX_CONSUMER, messageId, payloadHash, JSON.stringify(payload)],
       );
       await em.execute(
         `update inbox_messages
          set attempts = attempts + 1
          where consumer_name = ? and message_id = ?`,
-        ["wager-sqs-v1", messageId],
+        [INBOX_CONSUMER, messageId],
       );
       const rows = await em.execute<
         Array<{
           payload_hash: string;
           status: string;
           failure_code: string | null;
+          received_at: Date | string;
+          completed_at: Date | string | null;
         }>
       >(
-        `select payload_hash, status, failure_code
+        `select payload_hash, status, failure_code, received_at, completed_at
          from inbox_messages
          where consumer_name = ? and message_id = ?
          for update`,
-        ["wager-sqs-v1", messageId],
+        [INBOX_CONSUMER, messageId],
       );
       const row = rows[0];
       if (!row) throw new Error("Inbox claim did not return a persisted row.");
-      if (row.payload_hash !== payloadHash) {
+      const inbox = InboxMessage.rehydrate({
+        messageId,
+        consumerName: INBOX_CONSUMER,
+        payloadHash: row.payload_hash,
+        receivedAt: new Date(row.received_at),
+        processedAt:
+          row.status === "COMPLETED" && row.completed_at
+            ? new Date(row.completed_at)
+            : undefined,
+      });
+      if (!inbox.matchesPayload(payloadHash)) {
         await em.execute(
           `insert into inbox_message_conflicts
             (consumer_name, message_id, payload_hash, payload, received_at)
            values (?, ?, ?, ?::jsonb, now())
            on conflict do nothing`,
-          ["wager-sqs-v1", messageId, payloadHash, JSON.stringify(payload)],
+          [INBOX_CONSUMER, messageId, payloadHash, JSON.stringify(payload)],
         );
         return {
           kind: "dead-letter",
@@ -230,7 +244,7 @@ export class SqsWagerConsumer {
             : {}),
         } satisfies InboxDisposition;
       }
-      if (row.status === "COMPLETED") {
+      if (inbox.isProcessed()) {
         if (envelope.success) {
           const transactions = await em.execute<Array<{ id: string }>>(
             `select id from wager_transactions
@@ -266,7 +280,7 @@ export class SqsWagerConsumer {
           `update inbox_messages
            set status = 'FAILED', completed_at = now(), failure_code = ?
            where consumer_name = ? and message_id = ?`,
-          ["INVALID_MESSAGE_CONTRACT", "wager-sqs-v1", messageId],
+          ["INVALID_MESSAGE_CONTRACT", INBOX_CONSUMER, messageId],
         );
         return {
           kind: "dead-letter",
@@ -304,7 +318,7 @@ export class SqsWagerConsumer {
           `update inbox_messages
            set status = 'FAILED', completed_at = now(), failure_code = ?
            where consumer_name = ? and message_id = ?`,
-          [failureCode, "wager-sqs-v1", messageId],
+          [failureCode, INBOX_CONSUMER, messageId],
         );
         return {
           kind: "dead-letter",
@@ -313,11 +327,12 @@ export class SqsWagerConsumer {
           walletId: envelope.data.data.walletId,
         } satisfies InboxDisposition;
       }
+      inbox.markProcessed(new Date());
       await em.execute(
         `update inbox_messages
-         set status = 'COMPLETED', completed_at = now(), failure_code = null
+         set status = 'COMPLETED', completed_at = ?, failure_code = null
          where consumer_name = ? and message_id = ?`,
-        ["wager-sqs-v1", messageId],
+        [inbox.processedAt, INBOX_CONSUMER, messageId],
       );
       return {
         kind: "completed",

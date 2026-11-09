@@ -11,7 +11,11 @@ import {
   type ExternalWagerKind,
 } from "../../../src/modules/wagering/domain/entities/wager-transaction";
 import { ProcessWager } from "../../../src/modules/wagering/domain/services/process-wager";
-import type { WagerProcessedIntegrationEvent } from "../../../src/modules/messaging/contracts/integration-events";
+import {
+  IntegrationEvent,
+  WagerTransactionProcessed,
+  WalletBalanceChanged,
+} from "../../../src/modules/messaging/contracts/integration-events";
 
 const now = "2026-10-29T12:00:00.000Z";
 
@@ -107,7 +111,9 @@ describe("Money", () => {
     );
     expect(money("0.30").subtract(money("0.10")).toString()).toBe("0.20");
     expect(money("3.25").negate().toString()).toBe("-3.25");
-    expect(JSON.stringify(money("12.34"))).toBe('"12.34"');
+    expect(JSON.stringify(money("12.34"))).toBe(
+      '{"amount":"12.34","currency":"BRL"}',
+    );
     expect(Object.isFrozen(money("1.00"))).toBe(true);
   });
 
@@ -563,31 +569,87 @@ describe("wager processing rules", () => {
 });
 
 describe("integration event contracts", () => {
-  test("represent monetary values as JSON-safe decimal strings", () => {
-    const event: WagerProcessedIntegrationEvent = {
-      eventId: "event-1",
-      eventType: "WagerTransactionProcessed",
-      version: 1,
-      aggregateId: "tx-1",
-      correlationId: "correlation-1",
-      occurredAt: now,
-      data: {
-        transactionId: "tx-1",
-        providerId: "provider-1",
-        externalTransactionId: "external-1",
-        playerId: "player-1",
-        walletId: "wallet-1",
-        roundId: "round-1",
-        kind: "BET",
-        amount: money("5.25").toString(),
-        currency: "BRL",
-        walletBalance: money("94.75").toString(),
-        ledgerEntryId: "ledger-1",
-      },
-    };
+  const context = {
+    correlationId: "correlation-1",
+    occurredAt: new Date(now),
+  };
 
-    expect(JSON.parse(JSON.stringify(event))).toEqual(event);
-    expect(typeof event.data.amount).toBe("string");
-    expect(event.data.amount).toBe("5.25");
+  function betOutcome() {
+    const wallet = openWallet("100.00");
+    const bet = transaction("BET", "tx-1", "5.25");
+    const result = ProcessWager.apply(bet, wallet, {
+      referenceAlreadyReversed: false,
+      occurredAt: now,
+      ledgerEntryId: "ledger-1",
+    });
+    if (!result.wallet || !result.ledgerEntry) {
+      throw new Error("Expected the bet to move the balance.");
+    }
+    return { result, wallet: result.wallet, entry: result.ledgerEntry };
+  }
+
+  test("subclasses carry eventType and version in the type, not at the call site", () => {
+    const { result, wallet, entry } = betOutcome();
+    const processed = WagerTransactionProcessed.from(
+      result.transaction,
+      wallet,
+      entry,
+      context,
+    );
+    const changed = WalletBalanceChanged.from(wallet, entry, context);
+
+    expect(processed).toBeInstanceOf(IntegrationEvent);
+    expect(processed.eventType).toBe("WagerTransactionProcessed");
+    expect(processed.version).toBe(1);
+    expect(changed.eventType).toBe("WalletBalanceChanged");
+    expect(changed.aggregateId).toBe(wallet.id);
+  });
+
+  test("serialize money as decimal-string MoneyProps and dates as ISO-8601", () => {
+    const { result, wallet, entry } = betOutcome();
+    const json = WagerTransactionProcessed.from(
+      result.transaction,
+      wallet,
+      entry,
+      context,
+    ).toJSON();
+
+    expect(JSON.parse(JSON.stringify(json))).toEqual(json);
+    expect(json.occurredAt).toBe(now);
+    expect(json.data.money).toEqual({ amount: "5.25", currency: "BRL" });
+    expect(json.data.balance).toEqual({ amount: "94.75", currency: "BRL" });
+    expect(json).not.toHaveProperty("causationId");
+  });
+
+  test("WalletBalanceChanged exposes direction, money and both balances", () => {
+    const { wallet, entry } = betOutcome();
+    const json = WalletBalanceChanged.from(wallet, entry, {
+      ...context,
+      causationId: "cause-1",
+    }).toJSON();
+
+    expect(json.causationId).toBe("cause-1");
+    expect(json.data).toEqual({
+      walletId: wallet.id,
+      transactionId: entry.transactionId,
+      direction: "DEBIT",
+      money: { amount: "5.25", currency: "BRL" },
+      balanceBefore: { amount: "100.00", currency: "BRL" },
+      balanceAfter: { amount: "94.75", currency: "BRL" },
+      walletVersion: 2,
+    });
+  });
+});
+
+describe("Money wire representation", () => {
+  test("toJSON returns MoneyProps and from() applies the input rules", () => {
+    const value = Money.from({ amount: "25.00", currency: "BRL" });
+    expect(value.toJSON()).toEqual({ amount: "25.00", currency: "BRL" });
+    expect(JSON.parse(JSON.stringify({ balance: value }))).toEqual({
+      balance: { amount: "25.00", currency: "BRL" },
+    });
+    for (const amount of ["", "NaN", "Infinity", "1e3", "1.001", "-1.00"]) {
+      expect(() => Money.from({ amount, currency: "BRL" })).toThrow();
+    }
   });
 });
