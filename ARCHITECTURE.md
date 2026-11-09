@@ -2,7 +2,7 @@
 
 > **Status:** Stages 0–5 concluídos: métricas Prometheus, extensão de identidade, corridas financeiras entre processos, shutdown timeout POSIX, correlação uniforme e handoff estão implementados/testados. Os três agentes de workspace foram visualmente confirmados e selecionados no VS Code.
 > **Objetivo:** documentar as decisões, invariantes e trade-offs da implementação.  
-> **Escopo:** este documento descreve o desenho pretendido; decisões ainda não implementadas devem ser tratadas como plano, não como garantias já comprovadas.
+> **Escopo:** este documento descreve a implementação efetiva e os seus limites. O que permanece como limitação ou trabalho futuro está na seção 18; nada fora dela deve ser lido como garantia ainda não demonstrada.
 
 ### Estado implementado e limites da validação
 
@@ -54,7 +54,7 @@ Para manter o foco no desafio, a implementação inicial não pretende incluir:
 
 ## 2. Arquitetura de alto nível
 
-A solução será um **monólito modular**, organizado com princípios de Clean Architecture e DDD. A API e os workers serão processos executáveis separados a partir da mesma base de código e compartilharão os mesmos casos de uso.
+A solução é um **monólito modular**, organizado com princípios de Clean Architecture e DDD. A API e os workers são processos executáveis separados a partir da mesma base de código e compartilharão os mesmos casos de uso.
 
 ```text
                   ┌─────────────────────┐
@@ -127,7 +127,7 @@ O diagrama representa responsabilidades lógicas. A API, o consumidor SQS, o pub
 | Precisão monetária        | `bigint` em unidades menores dentro de `Money` | Aritmética exata para valores de qualquer magnitude sem usar `number` para dinheiro ou depender de precisão decimal configurável. |
 | Validação HTTP            | Zod                                            | Schemas estritos já usados em configuração e contratos de wallet; evita uma segunda stack de validação.                           |
 | Testes                    | `bun test`                                     | Runner compatível com o runtime escolhido.                                                                                        |
-| Logs                      | NestJS Logger                                  | Eventos JSON em alguns fluxos; propagação uniforme de correlação ainda incompleta.                                                |
+| Logs                      | `JsonLogger` (`LoggerService` do NestJS)       | Uma linha JSON por log, com `correlationId` do contexto assíncrono; campos de evento mesclados à entrada.                         |
 | Métricas                  | `@prometheus-io/client`                        | `/metrics` exporta counters e gauges process-local; scraping deve cobrir cada instância.                                          |
 | Autenticação              | Não habilitada                                 | Rotas de provider usam `ProviderIdentityPort`; o adapter padrão não autentica.                                                    |
 | Ambiente local            | Docker Compose + Bun                           | Compose sobe PostgreSQL e LocalStack; API e workers são iniciados separadamente pelo mesmo entrypoint Bun.                        |
@@ -146,59 +146,27 @@ A configuração TypeScript usa `module: Node16` e `moduleResolution: Node16`, s
 
 ## 4. Organização do código
 
-A estrutura exata pode evoluir conforme a implementação. A proposta inicial é organizar por módulos de domínio e separar domínio, aplicação, infraestrutura e apresentação.
+Estrutura efetiva, resumida. Cada módulo separa domínio, aplicação, infraestrutura e apresentação quando tem o que colocar em cada camada.
 
 ```text
 src/
-├── main.ts
-├── app.module.ts
+├── main.ts / app.module.ts / worker.module.ts   # bootstrap por WORKER_ROLE
+├── config/                                       # variáveis de ambiente (Zod)
+├── database/                                     # mappings MikroORM, migrations, runner
 ├── modules/
-│   ├── wallets/
-│   │   ├── domain/
-│   │   │   ├── entities/wallet.ts
-│   │   │   ├── value-objects/money.ts
-│   │   │   ├── errors/
-│   │   │   └── services/
-│   │   ├── application/
-│   │   │   ├── use-cases/
-│   │   │   └── ports/
-│   │   ├── infrastructure/
-│   │   │   └── persistence/
-│   │   └── presentation/http/
-│   ├── wagering/
-│   │   ├── domain/
-│   │   │   ├── entities/wager-transaction.ts
-│   │   │   ├── enums/
-│   │   │   └── policies/
-│   │   ├── application/
-│   │   │   ├── use-cases/process-wager.use-case.ts
-│   │   │   └── ports/
-│   │   ├── infrastructure/
-│   │   └── presentation/http/
-│   ├── ledger/
-│   │   ├── domain/
-│   │   ├── application/
-│   │   └── infrastructure/
-│   ├── reliability/
-│   │   ├── idempotency/
-│   │   ├── inbox/
-│   │   ├── outbox/
-│   │   └── pending-references/
-│   ├── messaging/
-│   │   ├── contracts/
-│   │   └── infrastructure/sqs/
-│   └── observability/
-│       ├── logging/
-│       ├── metrics/
-│       └── health/
-└── database/
-    └── migrations/
+│   ├── wallets/      domain (Wallet, Money, erros) · application (WalletService, ports) · infrastructure · presentation/http
+│   ├── wagering/     domain (WagerTransaction, ProcessWager) · application (WagerApplicationService) · presentation/http
+│   ├── ledger/       domain (WalletLedgerEntry) · application/ports · infrastructure
+│   ├── messaging/    contracts (IntegrationEvent e subclasses) · domain (InboxMessage, OutboxMessage)
+│   │                 · application (consumidor SQS, publisher Outbox, reprocessador) · infrastructure (SQS)
+│   ├── providers/    ProviderIdentityPort e adapter padrão
+│   ├── metrics/      registry Prometheus e /metrics
+│   └── health/       live e ready
+└── observability/    contexto de correlação e JsonLogger
 
 test/
-├── unit/
-├── integration/
-├── concurrency/
-└── fixtures/
+├── unit/             domínio, eventos, Inbox/Outbox, logger, métricas
+└── integration/      PostgreSQL e LocalStack reais (persistência, wagering, mensageria, multiprocesso)
 ```
 
 ### 4.1 Regras de dependência
@@ -283,8 +251,10 @@ A factory valida a equação do lançamento. No modelo inicial, uma transação 
 
 ### 5.5 Inbox e Outbox
 
-- **Inbox:** persiste o recebimento de mensagens e permite deduplicar a mesma mensagem por `(consumerName, messageId)`.
-- **Outbox:** persiste eventos de integração na mesma transação SQL das alterações financeiras e permite publicá-los posteriormente com retry.
+- **`InboxMessage`** (`receive`/`rehydrate`, `isProcessed`, `markProcessed`, `matchesPayload`): modela o recebimento de uma mensagem por um consumidor, identificada por `(consumerName, messageId)`. O consumidor SQS a reidrata a partir da linha bloqueada com `FOR UPDATE` e decide entre replay (`isProcessed`) e conflito (`!matchesPayload`).
+- **`OutboxMessage`** (`enqueue`/`rehydrate`, `isPending`, `isDue`, `markPublished`, `scheduleRetry`, `isExhausted`): `enqueue` captura o `IntegrationEvent` serializado; `scheduleRetry` conta a tentativa e calcula o próximo instante com backoff exponencial (base 1s, teto 5min, jitter ±50%, injetável para teste). O limite é `OUTBOX_MAX_ATTEMPTS = 10`.
+
+As duas classes não conhecem SQL. As colunas de lease (`status`, `lease_owner`, `lease_expires_at`) são preocupação do publisher, não do domínio. A persistência continua na mesma transação SQL das alterações financeiras.
 
 Os registros de ledger não são sobrescritos nem excluídos. Estados de transação, inbox e outbox seguem as transições e regras de retenção definidas pela implementação.
 
@@ -462,7 +432,9 @@ A alteração financeira e a criação dos eventos correspondentes devem ser con
 - `WalletBalanceChanged`: somente quando o saldo mudar.
 - `WagerTransactionPendingReference`: referência ainda ausente.
 
-Os eventos terão envelope tipado com `eventId`, `eventType`, `version`, `aggregateId`, `correlationId`, `causationId` opcional, `occurredAt` e `data`. Valores de `Money` são serializados como strings decimais, nunca como instâncias de classe.
+O envelope é a classe abstrata `IntegrationEvent<T>` (`eventId`, `aggregateId`, `correlationId`, `causationId` opcional, `occurredAt`, `data`, `toJSON()`), com uma subclasse concreta por evento. `eventType` e `version` pertencem ao tipo da subclasse (`WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged`, `WagerTransactionPendingReference`), e cada uma expõe uma factory `from(...)` que monta o `data` a partir das entidades de domínio.
+
+`data` carrega `MoneyProps` (`{ amount, currency }`, string decimal), nunca instâncias de `Money`, de modo que o payload gravado na Outbox é JSON estável e versionável. `WalletBalanceChanged` inclui `direction`, `money`, `balanceBefore`, `balanceAfter` e `walletVersion`.
 
 ### 11.2 Publicação concorrente
 
@@ -492,7 +464,7 @@ O worker realiza até 20 tentativas ou 24 horas desde a criação, o que ocorrer
 
 ## 13. API HTTP
 
-Endpoints previstos:
+Endpoints:
 
 | Método | Endpoint                                                              | Finalidade                                                                     |
 | ------ | --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -505,6 +477,7 @@ Endpoints previstos:
 | `POST` | `/wallets/:walletId/reconciliation`                                   | Comparar saldo materializado com o saldo calculado pelo ledger.                |
 | `GET`  | `/health/live`                                                        | Verificar se o processo está vivo.                                             |
 | `GET`  | `/health/ready`                                                       | Verificar dependências necessárias para operar.                                |
+| `GET`  | `/metrics`                                                            | Métricas Prometheus do processo.                                               |
 
 A API deve distinguir payload inválido, conflito de idempotência, rejeição de negócio, processamento pendente e falha transitória de infraestrutura com códigos HTTP consistentes e documentados.
 
@@ -514,7 +487,7 @@ Health checks não exigem autenticação. A reconciliação não corrige diverg�
 
 A paginação será baseada em cursor estável e opaco, ordenado por uma combinação única e determinística, como `createdAt` e `id`. Não dependerá de offset para percorrer um ledger que pode crescer continuamente.
 
-No Stage 2, a ordem implementada é crescente por `(created_at, id)`, com `timestamptz(3)` para preservar o cursor em `Date`. O cursor é base64url com versão e wallet, não um token de autorização; o limite padrão é 50 e valores maiores são limitados a 100. O contrato de criação é `{ playerId, currency, openingBalance }`, com UUID gerado internamente e resposta `201`. Wallet routes, wagering submit/read routes, `/health/live`, `/health/ready` e `/metrics` estão disponíveis. Readiness verifica PostgreSQL e as filas SQS configuradas; métricas exportam valores de cada processo. O contrato HTTP atual está em `docs/api/openapi.yaml`.
+No Stage 2, a ordem implementada é crescente por `(created_at, id)`, com `timestamptz(3)` para preservar o cursor em `Date`. O cursor é base64url com versão e wallet, não um token de autorização; o limite padrão é 50 e valores maiores são limitados a 100. O contrato de criação é `{ playerId, initialBalance: { amount, currency } }`, com UUID gerado internamente e resposta `201` com `{ id, playerId, balance, version }`. Saldos nas respostas de wallet, wager e reconciliação são objetos `{ amount, currency }`. Wallet routes, wagering submit/read routes, `/health/live`, `/health/ready` e `/metrics` estão disponíveis. Readiness verifica PostgreSQL e as filas SQS configuradas; métricas exportam valores de cada processo. O contrato HTTP atual está em `docs/api/openapi.yaml`.
 
 ## 14. Autenticação e segurança
 
@@ -551,7 +524,7 @@ Os logs devem ser JSON e incluir, quando disponíveis:
 - `walletId`;
 - `providerId`.
 
-Não incluir dados sensíveis nem payloads financeiros completos. Os logs devem permitir seguir uma operação entre API, worker, banco e publicação de eventos.
+Não incluir dados sensíveis nem payloads financeiros completos. `JsonLogger` grava exatamente um objeto JSON por linha (`timestamp`, `level`, `context`, `correlationId` e os campos do evento); erros vão para stderr. Os logs devem permitir seguir uma operação entre API, worker, banco e publicação de eventos.
 
 O middleware HTTP valida `X-Correlation-Id` como UUID; para um valor ausente ou inválido, gera um UUID e o devolve no response header. O consumidor SQS aceita `correlationId` opcional no envelope e gera um UUID quando ausente. O ID segue para os eventos Outbox, logs de processamento e retries de pending-reference; a rota para DLQ também o propaga como atributo da mensagem.
 
@@ -652,6 +625,9 @@ O README do projeto deve documentar:
 - Entrega duplicada de eventos continua possível e precisa ser tolerada pelos consumidores.
 - Os limites atuais são 20 tentativas/24 horas para referências, 10 tentativas para publicação Outbox e 60 segundos de visibility/lease; devem ser calibrados para operação de produção.
 - O uso operacional pode limitar-se a BRL no desafio, embora o domínio continue validando moedas.
+- Falhas transitórias no consumidor SQS retornam a mensagem pelo visibility timeout fixo de 60 segundos e pelo redrive após cinco recebimentos, sem backoff exponencial por tentativa. Ajustar a visibilidade por `receiveCount` é possível, mas não foi feito.
+- Fronteira negócio vs. permanente no consumidor: uma regra de negócio violada gera `REJECTED` persistido e a mensagem é confirmada (ACK); um `DomainError` de contrato (por exemplo moeda inválida) ou uma wallet inexistente vai para a DLQ, porque nenhuma decisão financeira durável pode ser registrada.
+- Snapshots de resposta gravados por versões anteriores usavam `walletBalance`; não há migração dessas linhas.
 - Autenticação pode ficar fora da implementação inicial, desde que a decisão e o ponto de extensão estejam explícitos.
 
 ## 19. Critérios de conclusão

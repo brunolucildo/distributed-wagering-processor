@@ -715,16 +715,18 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
       });
     const response = await request("/wallets", {
       playerId,
-      currency: "BRL",
-      openingBalance: "10.00",
+      initialBalance: { amount: "10.00", currency: "BRL" },
     });
     expect(response.status).toBe(201);
     const wallet = (await response.json()) as {
       id: string;
-      balance: string;
+      balance: { amount: string; currency: string };
       version: number;
     };
-    expect(wallet).toMatchObject({ balance: "10.00", version: 1 });
+    expect(wallet).toMatchObject({
+      balance: { amount: "10.00", currency: "BRL" },
+      version: 1,
+    });
     const read = await fetch(`${baseUrl}/wallets/${wallet.id}`);
     expect(read.status).toBe(200);
     expect(await read.json()).toMatchObject(wallet);
@@ -744,8 +746,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
       (
         await request("/wallets", {
           playerId,
-          currency: "BRL",
-          openingBalance: "0.00",
+          initialBalance: { amount: "0.00", currency: "BRL" },
         })
       ).status,
     ).toBe(409);
@@ -753,8 +754,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
       (
         await request("/wallets", {
           playerId,
-          currency: "BRL",
-          openingBalance: "1.001",
+          initialBalance: { amount: "1.001", currency: "BRL" },
         })
       ).status,
     ).toBe(400);
@@ -762,8 +762,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
       (
         await request("/wallets", {
           playerId,
-          currency: "BRL",
-          openingBalance: "1.00",
+          initialBalance: { amount: "1.00", currency: "BRL" },
           unexpected: true,
         })
       ).status,
@@ -772,8 +771,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
       (
         await request("/wallets", {
           playerId,
-          currency: "ZZZ",
-          openingBalance: "1.00",
+          initialBalance: { amount: "1.00", currency: "ZZZ" },
         })
       ).status,
     ).toBe(400);
@@ -796,7 +794,11 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
       {},
     );
     expect(reconciliation.status).toBe(200);
-    expect(await reconciliation.json()).toMatchObject({
+    expect(await reconciliation.json()).toEqual({
+      walletId: wallet.id,
+      storedBalance: { amount: "10.00", currency: "BRL" },
+      calculatedBalance: { amount: "10.00", currency: "BRL" },
+      difference: { amount: "0.00", currency: "BRL" },
       consistent: true,
       checkedEntries: 1,
     });
@@ -807,7 +809,7 @@ describe("Stage 2 / real PostgreSQL persistence", () => {
     const mismatch = await request(`/wallets/${wallet.id}/reconciliation`, {});
     expect(await mismatch.json()).toMatchObject({
       consistent: false,
-      difference: "1.00",
+      difference: { amount: "1.00", currency: "BRL" },
     });
     expect(app.get(ReconciliationMonitor).discrepancyCount).toBe(before + 1);
     expect((await service.get(wallet.id)).balance.toString()).toBe("11.00");

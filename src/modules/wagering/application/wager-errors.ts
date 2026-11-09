@@ -1,4 +1,5 @@
 import type { WagerStatus } from "../domain/entities/wager-transaction";
+import type { MoneyProps } from "../../wallets/domain/value-objects/money";
 
 export class WagerConflictError extends Error {
   constructor() {
@@ -29,7 +30,7 @@ export interface WagerSubmissionBody {
   transactionId: string;
   status: WagerStatus;
   failureCode?: string;
-  walletBalance: string;
+  balance: MoneyProps;
   idempotentReplay: boolean;
 }
 
@@ -52,7 +53,7 @@ export interface WagerTransactionView {
   referenceExternalTransactionId: string | null;
   status: string;
   failureCode: string | null;
-  walletBalance: string | null;
+  balance: MoneyProps | null;
   createdAt: string;
   completedAt: string | null;
 }

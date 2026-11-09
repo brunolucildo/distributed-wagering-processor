@@ -3,6 +3,7 @@ import { Logger } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { loadEnvironment } from "../../../config/environment";
 import { SqsQueueClient } from "../infrastructure/sqs-queue-client";
+import { OutboxMessage } from "../domain/outbox-message";
 import { MetricsService } from "../../metrics/metrics.service";
 import {
   correlationIdFromPayload,
@@ -10,7 +11,7 @@ import {
   runWithCorrelation,
 } from "../../../observability/correlation-context";
 
-interface OutboxMessage {
+interface ClaimedOutboxRow {
   event_id: string;
   aggregate_id: string;
   payload: Record<string, unknown>;
@@ -93,9 +94,9 @@ export class OutboxPublisher {
     return updated.length > 0;
   }
 
-  private async claimBatch(): Promise<OutboxMessage[]> {
+  private async claimBatch(): Promise<ClaimedOutboxRow[]> {
     return this.orm.em.fork().transactional(async (em) =>
-      em.execute<OutboxMessage[]>(
+      em.execute<ClaimedOutboxRow[]>(
         `with due as (
            select event_id
            from outbox_messages
@@ -151,13 +152,24 @@ export class OutboxPublisher {
     error: unknown,
     identifiers: OutboxLogIdentifiers,
   ): Promise<void> {
-    const rows = await this.orm.em.fork().execute<Array<{ attempts: number }>>(
-      `select attempts from outbox_messages
+    const rows = await this.orm.em.fork().execute<
+      Array<{
+        event_type: string;
+        aggregate_id: string;
+        payload: Record<string, unknown>;
+        created_at: Date | string;
+        attempts: number;
+        database_now: Date | string;
+      }>
+    >(
+      `select event_type, aggregate_id, payload, created_at, attempts,
+              clock_timestamp() as database_now
+       from outbox_messages
        where event_id = ? and status = 'PROCESSING' and lease_owner = ?`,
       [eventId, this.leaseOwner],
     );
-    const currentAttempt = rows[0]?.attempts;
-    if (currentAttempt === undefined) {
+    const row = rows[0];
+    if (!row) {
       this.logger.warn(
         JSON.stringify({
           event: "outbox_lease_lost_after_failure",
@@ -168,26 +180,33 @@ export class OutboxPublisher {
       );
       return;
     }
-    const attempts = currentAttempt + 1;
-    const terminal = attempts >= 10;
-    const baseDelay = Math.min(1_000 * 2 ** (attempts - 1), 300_000);
-    const delay = Math.min(
-      300_000,
-      Math.round(baseDelay * (0.5 + Math.random())),
-    );
+    const message = OutboxMessage.rehydrate({
+      id: eventId,
+      aggregateId: row.aggregate_id,
+      eventType: row.event_type,
+      payload: row.payload,
+      occurredAt: new Date(row.created_at),
+      attempts: row.attempts,
+    });
+    const databaseNow = new Date(row.database_now);
+    message.scheduleRetry(databaseNow);
+    const attempts = message.attempts;
+    const terminal = message.isExhausted();
+    const nextAttemptAt = message.nextAttemptAt ?? databaseNow;
+    const delay = nextAttemptAt.getTime() - databaseNow.getTime();
     const errorType = error instanceof Error ? error.name : "UnknownError";
     const updated = await this.orm.em
       .fork()
       .execute<Array<{ event_id: string }>>(
         `update outbox_messages
-       set status = ?, attempts = ?, next_attempt_at = now() + (? * interval '1 millisecond'),
+       set status = ?, attempts = ?, next_attempt_at = ?,
            lease_owner = null, lease_expires_at = null, last_error = ?
        where event_id = ? and status = 'PROCESSING' and lease_owner = ?
        returning event_id`,
         [
           terminal ? "FAILED" : "PENDING",
           attempts,
-          delay,
+          nextAttemptAt,
           errorType.slice(0, 100),
           eventId,
           this.leaseOwner,

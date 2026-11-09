@@ -21,10 +21,10 @@
 
 ### Wallet contract delivered in Stage 2
 
-- `POST /wallets` accepts exactly `{ playerId, currency, openingBalance }`; `playerId` is trimmed and limited to 1–200 characters, `currency` is validated as uppercase ISO-4217, and `openingBalance` is a non-negative two-decimal string within the persistence limit. The current HTTP string-size limit is 100 characters.
-- IDs are generated as UUIDs internally. Creation returns `201` with `{ id, playerId, currency, balance, version }`; balance is a decimal string. Duplicate `(playerId, currency)` returns `409`, not an idempotent creation replay.
+- `POST /wallets` accepts exactly `{ playerId, initialBalance: { amount, currency } }`; `playerId` is trimmed and limited to 1–200 characters, `currency` is validated as uppercase ISO-4217, and `amount` is a non-negative two-decimal string within the persistence limit. The current HTTP string-size limit is 100 characters. The domain and `WalletService` still name the same value `openingBalance`.
+- IDs are generated as UUIDs internally. Creation returns `201` with `{ id, playerId, balance: { amount, currency }, version }`. Duplicate `(playerId, currency)` returns `409`, not an idempotent creation replay.
 - The read route returns the same wallet shape. Ledger entries contain `id`, `walletId`, `transactionId`, `amount`, `currency`, `direction`, `balanceBefore`, `balanceAfter`, and `createdAt`, together with `nextCursor` (nullable).
-- The reconciliation route returns `200` with `walletId`, `currency`, `storedBalance`, `calculatedBalance`, `difference` (stored minus calculated), `consistent`, and `checkedEntries`. It does not repair either data source.
+- The reconciliation route returns `200` with `walletId`, `storedBalance`, `calculatedBalance`, `difference` (stored minus calculated; the amount may be negative), `consistent`, and `checkedEntries`. The three balances are `{ amount, currency }` objects. It does not repair either data source.
 - Wallet IDs in paths must be UUIDs. Missing wallets return `404`. The existing wallet exception filter is registered globally via `APP_FILTER`, so pre-controller parser errors and controller errors use `{ code, message }`.
 - Authentication/authorization are not enabled; `providerId` remains a business field, not authenticated identity. Provider wager routes call `ProviderIdentityPort`; the default `UnconfiguredProviderIdentityAdapter` returns no authenticated identity, and the API must not be presented as protected. Replace it with an external IdP adapter before exposing provider routes to untrusted callers.
 
@@ -40,7 +40,7 @@ The checked-in OpenAPI contract is [openapi.yaml](../api/openapi.yaml). Runtime 
 
 ## 3. Response semantics
 
-The response body for a durable outcome contains `transactionId`, `status`, optional `failureCode`, the balance captured when processing completed (when available), and `idempotentReplay`.
+The response body for a durable outcome contains `transactionId`, `status`, optional `failureCode`, `balance` (`{ amount, currency }`, captured when processing completed), and `idempotentReplay`.
 
 | Outcome                                                         |                                                           HTTP status |
 | --------------------------------------------------------------- | --------------------------------------------------------------------: |

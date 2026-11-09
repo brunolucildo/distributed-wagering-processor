@@ -26,7 +26,7 @@ jobs:
           docs/specs/01-persistence-and-concurrency.md
           docs/specs/02-api-and-idempotency.md
           docs/specs/04-operations-and-verification.md
-          docs/plans/implementation-roadmap.md docs/api/openapi.yaml
+          docs/plans/implementation-roadmap.md docs/plans/delivery-history.md docs/api/openapi.yaml
           .github/workflows/ci.yml
       - name: Type-check
         run: bun run typecheck

@@ -8,7 +8,6 @@ import {
 import { MikroORM } from "@mikro-orm/postgresql";
 import type { SqlEntityManager } from "@mikro-orm/knex";
 import {
-  JsonRecord,
   LedgerEntryRecord,
   OutboxMessageRecord,
   WagerTransactionRecord,
@@ -23,9 +22,13 @@ import { Wallet } from "../../wallets/domain/entities/wallet";
 import { Money } from "../../wallets/domain/value-objects/money";
 import type { WalletLedgerEntry } from "../../ledger/domain/entities/wallet-ledger-entry";
 import {
-  IntegrationEventEnvelope,
   WagerIntegrationEvent,
+  WagerTransactionPendingReference,
+  WagerTransactionProcessed,
+  WagerTransactionRejected,
+  WalletBalanceChanged,
 } from "../../messaging/contracts/integration-events";
+import { OutboxMessage } from "../../messaging/domain/outbox-message";
 import { ProcessWager } from "../domain/services/process-wager";
 import { MetricsService } from "../../metrics/metrics.service";
 import {
@@ -150,18 +153,6 @@ function transactionFromRow(row: ReferenceRow): WagerTransaction {
       ? new Date(row.completed_at).toISOString()
       : null,
   });
-}
-
-function jsonRecord(value: object): JsonRecord {
-  const serialized: unknown = JSON.parse(JSON.stringify(value));
-  if (
-    !serialized ||
-    typeof serialized !== "object" ||
-    Array.isArray(serialized)
-  ) {
-    throw new Error("Integration event must serialize to a JSON object.");
-  }
-  return serialized as JsonRecord;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -334,7 +325,7 @@ export class WagerApplicationService {
         ...(result.transaction.failureCode
           ? { failureCode: result.transaction.failureCode }
           : {}),
-        walletBalance: (result.wallet ?? wallet).balance.toString(),
+        balance: (result.wallet ?? wallet).balance.toJSON(),
         idempotentReplay: false,
       };
       const responseSnapshot = { httpStatus, body };
@@ -399,18 +390,7 @@ export class WagerApplicationService {
         correlationId,
       );
       for (const event of events) {
-        em.persist(
-          em.create(OutboxMessageRecord, {
-            eventId: event.eventId,
-            eventType: event.eventType,
-            aggregateId: event.aggregateId,
-            payload: jsonRecord(event),
-            status: "PENDING",
-            attempts: 0,
-            nextAttemptAt: savedAt,
-            createdAt: savedAt,
-          }),
-        );
+        em.persist(this.outboxRecord(em, OutboxMessage.enqueue(event)));
       }
       await em.flush();
       return { httpStatus, body };
@@ -621,7 +601,7 @@ export class WagerApplicationService {
           ...(result.transaction.failureCode
             ? { failureCode: result.transaction.failureCode }
             : {}),
-          walletBalance: (result.wallet ?? wallet)?.balance.toString() ?? null,
+          balance: (result.wallet ?? wallet)?.balance.toJSON() ?? null,
           idempotentReplay: false,
         },
       };
@@ -667,18 +647,7 @@ export class WagerApplicationService {
           occurredAt,
           correlationId,
         )) {
-          em.persist(
-            em.create(OutboxMessageRecord, {
-              eventId: event.eventId,
-              eventType: event.eventType,
-              aggregateId: event.aggregateId,
-              payload: jsonRecord(event),
-              status: "PENDING",
-              attempts: 0,
-              nextAttemptAt: occurredAt,
-              createdAt: occurredAt,
-            }),
-          );
+          em.persist(this.outboxRecord(em, OutboxMessage.enqueue(event)));
         }
       }
       await em.flush();
@@ -810,6 +779,22 @@ export class WagerApplicationService {
     throw new Error(`Unexpected uncommitted wager status: ${status}.`);
   }
 
+  private outboxRecord(
+    em: SqlEntityManager,
+    message: OutboxMessage,
+  ): OutboxMessageRecord {
+    return em.create(OutboxMessageRecord, {
+      eventId: message.id,
+      eventType: message.eventType,
+      aggregateId: message.aggregateId,
+      payload: { ...message.payload },
+      status: "PENDING",
+      attempts: message.attempts,
+      nextAttemptAt: message.nextAttemptAt ?? message.occurredAt,
+      createdAt: message.occurredAt,
+    });
+  }
+
   private integrationEvents(
     transaction: WagerTransaction,
     wallet: Wallet,
@@ -817,120 +802,26 @@ export class WagerApplicationService {
     occurredAt: Date,
     correlationId = currentCorrelationId() ?? randomUUID(),
   ): WagerIntegrationEvent[] {
-    const eventBase = {
-      version: 1 as const,
-      aggregateId: transaction.id,
-      correlationId,
-      occurredAt: occurredAt.toISOString(),
-    };
-    if (
-      !transaction.providerId ||
-      !transaction.externalTransactionId ||
-      !transaction.roundId
-    ) {
-      throw new Error(
-        "External wager identity is required for integration events.",
-      );
-    }
+    const context = { correlationId, occurredAt };
     if (transaction.status === "PROCESSED") {
-      const processed: IntegrationEventEnvelope<
-        "WagerTransactionProcessed",
-        Extract<
-          WagerIntegrationEvent,
-          { eventType: "WagerTransactionProcessed" }
-        >["data"]
-      > = {
-        ...eventBase,
-        eventId: randomUUID(),
-        eventType: "WagerTransactionProcessed",
-        data: {
-          transactionId: transaction.id,
-          providerId: transaction.providerId,
-          externalTransactionId: transaction.externalTransactionId,
-          playerId: transaction.playerId,
-          walletId: transaction.walletId,
-          roundId: transaction.roundId,
-          kind: transaction.kind as Exclude<
-            WagerTransaction["kind"],
-            "OPENING"
-          >,
-          amount: transaction.amount.toString(),
-          currency: transaction.currency,
-          walletBalance: wallet.balance.toString(),
-          ledgerEntryId: ledgerEntry?.id ?? null,
-        },
-      };
-      const events: WagerIntegrationEvent[] = [processed];
+      const events: WagerIntegrationEvent[] = [
+        WagerTransactionProcessed.from(
+          transaction,
+          wallet,
+          ledgerEntry,
+          context,
+        ),
+      ];
       if (ledgerEntry) {
-        events.push({
-          ...eventBase,
-          eventId: randomUUID(),
-          aggregateId: wallet.id,
-          eventType: "WalletBalanceChanged",
-          data: {
-            transactionId: transaction.id,
-            walletId: wallet.id,
-            playerId: wallet.playerId,
-            currency: wallet.currency,
-            balanceBefore: ledgerEntry.balanceBefore.toString(),
-            balanceAfter: ledgerEntry.balanceAfter.toString(),
-            walletVersion: wallet.version,
-          },
-        });
+        events.push(WalletBalanceChanged.from(wallet, ledgerEntry, context));
       }
       return events;
     }
-    if (transaction.status === "REJECTED" && transaction.failureCode) {
-      return [
-        {
-          ...eventBase,
-          eventId: randomUUID(),
-          eventType: "WagerTransactionRejected",
-          data: {
-            transactionId: transaction.id,
-            providerId: transaction.providerId,
-            externalTransactionId: transaction.externalTransactionId,
-            playerId: transaction.playerId,
-            walletId: transaction.walletId,
-            roundId: transaction.roundId,
-            kind: transaction.kind as Exclude<
-              WagerTransaction["kind"],
-              "OPENING"
-            >,
-            amount: transaction.amount.toString(),
-            currency: transaction.currency,
-            failureCode: transaction.failureCode,
-          },
-        },
-      ];
+    if (transaction.status === "REJECTED") {
+      return [WagerTransactionRejected.from(transaction, context)];
     }
-    if (
-      transaction.status === "PENDING_REFERENCE" &&
-      transaction.referenceExternalTransactionId
-    ) {
-      return [
-        {
-          ...eventBase,
-          eventId: randomUUID(),
-          eventType: "WagerTransactionPendingReference",
-          data: {
-            transactionId: transaction.id,
-            providerId: transaction.providerId,
-            externalTransactionId: transaction.externalTransactionId,
-            referenceExternalTransactionId:
-              transaction.referenceExternalTransactionId,
-            playerId: transaction.playerId,
-            walletId: transaction.walletId,
-            roundId: transaction.roundId,
-            kind: transaction.kind as Exclude<
-              WagerTransaction["kind"],
-              "OPENING"
-            >,
-            amount: transaction.amount.toString(),
-            currency: transaction.currency,
-          },
-        },
-      ];
+    if (transaction.status === "PENDING_REFERENCE") {
+      return [WagerTransactionPendingReference.from(transaction, context)];
     }
     throw new Error(
       `No integration event is defined for ${transaction.status}.`,
@@ -939,9 +830,17 @@ export class WagerApplicationService {
 
   private toView(row: WagerTransactionRecord): WagerTransactionView {
     const snapshotBody = row.responseSnapshot?.body;
+    const snapshotBalance = isRecord(snapshotBody)
+      ? snapshotBody.balance
+      : undefined;
     const balance =
-      isRecord(snapshotBody) && typeof snapshotBody.walletBalance === "string"
-        ? snapshotBody.walletBalance
+      isRecord(snapshotBalance) &&
+      typeof snapshotBalance.amount === "string" &&
+      typeof snapshotBalance.currency === "string"
+        ? {
+            amount: snapshotBalance.amount,
+            currency: snapshotBalance.currency,
+          }
         : null;
     return {
       transactionId: row.id,
@@ -957,7 +856,7 @@ export class WagerApplicationService {
       referenceExternalTransactionId: row.referenceExternalTransactionId,
       status: row.status,
       failureCode: row.failureCode,
-      walletBalance: balance,
+      balance,
       createdAt: row.createdAt.toISOString(),
       completedAt: row.completedAt?.toISOString() ?? null,
     };
